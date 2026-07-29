@@ -1,17 +1,10 @@
-import dbus
+import subprocess
 
-session_bus = dbus.SessionBus()
-spotify_bus = session_bus.get_object("org.mpris.MediaPlayer2.spotify",
-                                     "/org/mpris/MediaPlayer2")
-spotify_properties = dbus.Interface(spotify_bus,
-                                    "org.freedesktop.DBus.Properties")
-metadata = spotify_properties.Get("org.mpris.MediaPlayer2.Player", "Metadata")
 
-# The property Metadata behaves like a python dict
-for key, value in metadata.items():
-    print(key, value)
+def run_command(command: str):
+    """Execute a bash command string and return the completed process."""
+    return subprocess.run(command, shell=True, text=True, check=True)
 
-# To just print the title
-print(metadata['xesam:title'])
 
 if __name__ == '__main__':
+    run_command('echo "hello from soundCheck"')
