@@ -1,19 +1,19 @@
 import json
 import os
-import requests
+
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 
-def build_song_payload(track_data):
-    if not track_data or not track_data.get("is_playing") or not track_data.get("item"):
+def build_song_payload(playback_data):
+    if not playback_data or not playback_data.get("is_playing") or not playback_data.get("item"):
         return {
             "is_playing": False,
             "song": None,
             "message": "No track is currently playing.",
         }
 
-    item = track_data["item"]
+    item = playback_data["item"]
     album = item.get("album", {})
     artists = [artist.get("name") for artist in item.get("artists", []) if artist.get("name")]
 
@@ -28,12 +28,16 @@ def build_song_payload(track_data):
             "uri": item.get("uri"),
             "release_date": album.get("release_date"),
             "album_art": album.get("images", [{}])[0].get("url") if album.get("images") else None,
-            
+            "device": playback_data.get("device", {}).get("name"),
+            "progress_ms": playback_data.get("progress_ms"),
+            "is_repeat": playback_data.get("repeat_state"),
+            "shuffle": playback_data.get("shuffle_state"),
+            "context": playback_data.get("context", {}).get("uri"),
         },
     }
 
 
-def get_currently_playing_song():
+def get_current_playback():
     client_id = os.getenv("SPOTIPY_CLIENT_ID")
     client_secret = os.getenv("SPOTIPY_CLIENT_SECRET")
     redirect_uri = os.getenv("SPOTIPY_REDIRECT_URI", "http://localhost:8080/callback")
@@ -51,16 +55,25 @@ def get_currently_playing_song():
         open_browser=False,
     )
     spotify_client = spotipy.Spotify(auth_manager=auth_manager)
-    track_data = spotify_client.current_user_currently_playing_track()
-    return build_song_payload(track_data)
+    playback_data = spotify_client.current_playback()
+    print(playback_data +"/n/n")
+    return build_song_payload(playback_data)
 
 
-if __name__ == "__main__":
+def get_currently_playing_song():
+    return get_current_playback()
+
+
+def main():
     try:
-        song = get_currently_playing_song()
+        song = get_current_playback()
         print(json.dumps(song, indent=2))
+        if song.get("song") and song["song"].get("album_art"):
+            print(song["song"]["album_art"])
     except Exception as exc:
         print(json.dumps({"error": str(exc)}, indent=2))
 
 
-    print(song['album_art'])
+if __name__ == "__main__":
+    main()
+    
