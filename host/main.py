@@ -1,8 +1,11 @@
+import json
 import os
 from pathlib import Path
 
+import requests
 import spotipy
 import yaml
+from PIL import Image, ImageDraw, ImageOps
 from spotipy.oauth2 import SpotifyOAuth
 
 
@@ -17,8 +20,6 @@ def load_config():
 
 def spotipy_setup():
     config = load_config()
-    print(config)
-
     client_id = config.get("SPOTIPY_CLIENT_ID") or os.getenv("SPOTIPY_CLIENT_ID")
     client_secret = config.get("SPOTIPY_CLIENT_SECRET") or os.getenv("SPOTIPY_CLIENT_SECRET")
     redirect_uri = config.get("SPOTIPY_REDIRECT_URI") or os.getenv("SPOTIPY_REDIRECT_URI")
@@ -34,11 +35,99 @@ def spotipy_setup():
     sp = spotipy.Spotify(auth_manager=auth_manager)
     return sp
 
+
+def image_convert(img):
+    input_path = Path(img)
+    output_dir = input_path.parent / "art"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with Image.open(input_path) as img_obj:
+        img_obj = ImageOps.exif_transpose(img_obj).convert("RGBA")
+        img_obj = img_obj.resize((64, 64), Image.LANCZOS)
+
+        mask = Image.new("L", (64, 64), 0)
+        draw = ImageDraw.Draw(mask)
+        draw.ellipse((0, 0, 63, 63), fill=255)
+
+        hole_radius = 6
+        draw.ellipse((32 - hole_radius, 32 - hole_radius, 32 + hole_radius, 32 + hole_radius), fill=0)
+
+        for angle in range(12):
+            rotated = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            rotated_img = img_obj.rotate(-angle * 30, expand=False, fillcolor=(0, 0, 0, 0))
+            rotated.paste(rotated_img, (0, 0), rotated_img)
+
+            composite = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            composite.paste(rotated, (0, 0), mask)
+
+            final_img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            final_img.paste(composite, (0, 0))
+
+            outline = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            outline_draw = ImageDraw.Draw(outline)
+            outline_draw.ellipse((0, 0, 63, 63), outline=(255, 255, 255, 255), width=1)
+            final_img = Image.alpha_composite(final_img, outline)
+
+            center_hole = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            draw_hole = ImageDraw.Draw(center_hole)
+            draw_hole.ellipse((32 - hole_radius, 32 - hole_radius, 32 + hole_radius, 32 + hole_radius), fill=(0, 0, 0, 255))
+            draw_hole.ellipse((32 - hole_radius, 32 - hole_radius, 32 + hole_radius, 32 + hole_radius), outline=(255, 255, 255, 255), width=1)
+            final_img = Image.alpha_composite(final_img, center_hole)
+
+            output_path = output_dir / f"{angle + 1}.png"
+            final_img.save(output_path)
+
+
 def main():
     sp = spotipy_setup()
+    try:
+        info = sp.current_playback()
 
-    print(sp.current_playback())
+        if info and info.get("is_playing"):
+            info = {
+                "song_name": info["item"]["name"],
+                "artist": info["item"]["artists"][0]["name"],
+                "album": info["item"]["album"]["name"],
+                "year": info["item"]["album"]["release_date"].split("-")[0],
+                "img": info["item"]["album"]["images"][1]["url"],
+            }
+            with open("./out/cover.jpg", "wb") as f:
+                img = requests.get(info["img"])
+                f.write(img.content)
+                f.close()
 
+            image_convert("./out/cover.jpg")
+
+            with open("./out/info.json", "w", encoding="utf-8") as f:
+                json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
+                f.close()
+    except Exception:
+        print("!!! NO CONNECTION !!!")
+    
 if __name__ == "__main__":
     main()
+
+
+'''
+    {'device': {'id': '97e0501c5a3e0556093ac14d909e06a109c2a4dc', 'is_active': True, 'is_private_session': False, 'is_restricted': False, 'name': 'THINKPAD', 'supports_volume': True, 'type': 'Computer', 'volume_percent': 58},
+      'shuffle_state': True, 
+      'smart_shuffle': False, 
+      'repeat_state': 'off', 
+      'is_playing': True, 
+      'timestamp': 1785431954550, 
+      'context': None, 
+      'progress_ms': 477867, 
+      'item': {'album': {'album_type': 'album',
+                          'artists': [{'external_urls': {'spotify': 'https://open.spotify.com/artist/4MVyzYMgTwdP7Z49wAZHx0'}, 
+                                       'href': 'https://api.spotify.com/v1/artists/4MVyzYMgTwdP7Z49wAZHx0', 'id': '4MVyzYMgTwdP7Z49wAZHx0', 'name': 'Lynyrd Skynyrd', 'type': 'artist', 'uri': 'spotify:artist:4MVyzYMgTwdP7Z49wAZHx0'}], 
+                                       'external_urls': {'spotify': 'https://open.spotify.com/album/6DExt1eX4lflLacVjHHbOs'}, 'href': 'https://api.spotify.com/v1/albums/6DExt1eX4lflLacVjHHbOs', 'id': '6DExt1eX4lflLacVjHHbOs', 
+                            'images': [{'height': 640, 'url': 'https://i.scdn.co/image/ab67616d0000b273128450651c9f0442780d8eb8', 'width': 640}, {'height': 300, 'url': 'https://i.scdn.co/image/ab67616d00001e02128450651c9f0442780d8eb8', 'width': 300}, {'height': 64, 'url': 'https://i.scdn.co/image/ab67616d00004851128450651c9f0442780d8eb8', 'width': 64}], 
+                            'name': "Pronounced' Leh-'Nerd 'Skin-'Nerd", 
+                            'release_date': '1973-01-01', 'release_date_precision': 'day', 'total_tracks': 8, 'type': 'album', 'uri': 'spotify:album:6DExt1eX4lflLacVjHHbOs'},
+                'artists': [{'external_urls': {'spotify': 'https://open.spotify.com/artist/4MVyzYMgTwdP7Z49wAZHx0'}, 'href': 'https://api.spotify.com/v1/artists/4MVyzYMgTwdP7Z49wAZHx0', 'id': '4MVyzYMgTwdP7Z49wAZHx0', 'name': 'Lynyrd Skynyrd', 'type': 'artist', 'uri': 'spotify:artist:4MVyzYMgTwdP7Z49wAZHx0'}], 'disc_number': 1, 'duration_ms': 547106, 'explicit': False, 'external_urls': {'spotify': 'https://open.spotify.com/track/5EWPGh7jbTNO2wakv8LjUI'}, 'href': 'https://api.spotify.com/v1/tracks/5EWPGh7jbTNO2wakv8LjUI', 'id': '5EWPGh7jbTNO2wakv8LjUI', 'is_local': False, 'name': 'Free Bird', 'preview_url': None, 'track_number': 8, 'type': 'track', 'uri': 'spotify:track:5EWPGh7jbTNO2wakv8LjUI'}, 'currently_playing_type': 'track', 'actions': {'disallows': {'resuming': True, 'toggling_repeat_context': True, 'toggling_repeat_track': True, 'toggling_shuffle': True}}}
     
+    
+    [{'external_urls': {'spotify': 'https://open.spotify.com/artist/4MVyzYMgTwdP7Z49wAZHx0'},
+      'href': 'https://api.spotify.com/v1/artists/4MVyzYMgTwdP7Z49wAZHx0', 'id': '4MVyzYMgTwdP7Z49wAZHx0', 'name': 'Lynyrd Skynyrd', 'type': 'artist', 'uri': 'spotify:artist:4MVyzYMgTwdP7Z49wAZHx0'}]
+    
+    '''
