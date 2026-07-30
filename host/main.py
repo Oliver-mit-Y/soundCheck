@@ -1,25 +1,35 @@
-import json
 import os
+from pathlib import Path
 
 import spotipy
+import yaml
 from spotipy.oauth2 import SpotifyOAuth
 
 
-def spotipy_setup():
-    # 1. Fetch credentials from your shell environment
-    client_id = os.getenv("SPOTIPY_CLIENT_ID")
-    client_secret = os.getenv("SPOTIPY_CLIENT_SECRET")
-    redirect_uri = os.getenv("SPOTIPY_REDIRECT_URI")  # e.g., "http://localhost:8080"
+def load_config():
+    config_path = Path(__file__).resolve().with_name("conf.yml")
+    if not config_path.exists():
+        return {}
 
-    # 2. Define the permissions (scopes) your script needs
+    with config_path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def spotipy_setup():
+    config = load_config()
+    print(config)
+
+    client_id = config.get("SPOTIPY_CLIENT_ID") or os.getenv("SPOTIPY_CLIENT_ID")
+    client_secret = config.get("SPOTIPY_CLIENT_SECRET") or os.getenv("SPOTIPY_CLIENT_SECRET")
+    redirect_uri = config.get("SPOTIPY_REDIRECT_URI") or os.getenv("SPOTIPY_REDIRECT_URI")
+
     scope = "user-read-playback-state user-read-currently-playing"
 
-    # 3. Initialize the OAuth manager and the Spotipy client
     auth_manager = SpotifyOAuth(
         client_id=client_id,
         client_secret=client_secret,
         redirect_uri=redirect_uri,
-        scope=scope
+        scope=scope,
     )
     sp = spotipy.Spotify(auth_manager=auth_manager)
     return sp
