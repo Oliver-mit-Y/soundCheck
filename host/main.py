@@ -1,12 +1,12 @@
 import json
 import os
 from pathlib import Path
-
+import time
 import requests
 import spotipy
 import yaml
 from PIL import Image, ImageDraw, ImageOps
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import CacheFileHandler, SpotifyOAuth
 
 
 def load_config():
@@ -22,15 +22,20 @@ def spotipy_setup():
     config = load_config()
     client_id = config.get("SPOTIPY_CLIENT_ID") or os.getenv("SPOTIPY_CLIENT_ID")
     client_secret = config.get("SPOTIPY_CLIENT_SECRET") or os.getenv("SPOTIPY_CLIENT_SECRET")
-    redirect_uri = config.get("SPOTIPY_REDIRECT_URI") or os.getenv("SPOTIPY_REDIRECT_URI")
+    redirect_uri = config.get("SPOTIPY_REDIRECT_URI") or os.getenv("SPOTIPY_REDIRECT_URI") or "http://127.0.0.1:8080/callback"
 
     scope = "user-read-playback-state user-read-currently-playing"
+
+    cache_path = Path(__file__).resolve().parent / ".cache"
+    cache_handler = CacheFileHandler(cache_path=str(cache_path))
 
     auth_manager = SpotifyOAuth(
         client_id=client_id,
         client_secret=client_secret,
         redirect_uri=redirect_uri,
         scope=scope,
+        open_browser=True,
+        cache_handler=cache_handler,
     )
     sp = spotipy.Spotify(auth_manager=auth_manager)
     return sp
@@ -80,29 +85,37 @@ def image_convert(img):
 
 def main():
     sp = spotipy_setup()
-    try:
-        info = sp.current_playback()
+    last_img = ''
+    while True:
+        time.sleep(5)
+        try:
+            info = sp.current_playback()
+            if info and info.get("is_playing"):
+                info = {
+                    "song_name": info["item"]["name"],
+                    "artist": info["item"]["artists"][0]["name"],
+                    "album": info["item"]["album"]["name"],
+                    "year": info["item"]["album"]["release_date"].split("-")[0],
+                    "img": info["item"]["album"]["images"][1]["url"],
+                }
+                if info['img'] != last_img:
+                    with open("./out/cover.jpg", "wb") as f:
+                        img = requests.get(info["img"])
+                        f.write(img.content)
+                        f.close()
 
-        if info and info.get("is_playing"):
-            info = {
-                "song_name": info["item"]["name"],
-                "artist": info["item"]["artists"][0]["name"],
-                "album": info["item"]["album"]["name"],
-                "year": info["item"]["album"]["release_date"].split("-")[0],
-                "img": info["item"]["album"]["images"][1]["url"],
-            }
-            with open("./out/cover.jpg", "wb") as f:
-                img = requests.get(info["img"])
-                f.write(img.content)
-                f.close()
+                    image_convert("./out/cover.jpg")
 
-            image_convert("./out/cover.jpg")
+                    with open("./out/info.json", "w", encoding="utf-8") as f:
+                        json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
+                        f.close()
+                        print('ye')
+                    last_img = info['img']
 
-            with open("./out/info.json", "w", encoding="utf-8") as f:
-                json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
-                f.close()
-    except Exception:
-        print("!!! NO CONNECTION !!!")
+                
+            print(info)
+        except Exception:
+            print("!!! NO CONNECTION !!!")
     
 if __name__ == "__main__":
     main()
