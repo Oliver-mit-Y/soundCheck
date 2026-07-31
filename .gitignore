@@ -1,3 +1,4 @@
 host/conf.yml
 guest/env
 host/.cache
+.cache
