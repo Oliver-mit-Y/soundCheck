@@ -88,34 +88,34 @@ def main():
     last_img = ''
     while True:
         time.sleep(5)
-        try:
-            info = sp.current_playback()
-            if info and info.get("is_playing"):
-                info = {
-                    "song_name": info["item"]["name"],
-                    "artist": info["item"]["artists"][0]["name"],
-                    "album": info["item"]["album"]["name"],
-                    "year": info["item"]["album"]["release_date"].split("-")[0],
-                    "img": info["item"]["album"]["images"][1]["url"],
-                }
-                if info['img'] != last_img:
-                    with open("./out/cover.jpg", "wb") as f:
-                        img = requests.get(info["img"])
-                        f.write(img.content)
-                        f.close()
+        # try:
+        info = sp.current_playback()
+        if info and info.get("is_playing"):
+            info = {
+                "song_name": info["item"]["name"],
+                "artist": info["item"]["artists"][0]["name"],
+                "album": info["item"]["album"]["name"],
+                "year": info["item"]["album"]["release_date"].split("-")[0],
+                "img": info["item"]["album"]["images"][1]["url"],
+            }
+            if info['img'] != last_img:
+                with open("./out/cover.jpg", "wb") as f:
+                    img = requests.get(info["img"])
+                    f.write(img.content)
+                    f.close()
 
-                    image_convert("./out/cover.jpg")
+                image_convert("./out/cover.jpg")
 
-                    with open("./out/info.json", "w", encoding="utf-8") as f:
-                        json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
-                        f.close()
-                        print('ye')
-                    last_img = info['img']
+                with open("./out/info.json", "w", encoding="utf-8") as f:
+                    json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
+                    f.close()
+                    print('ye')
+                last_img = info['img']
 
-                
-            print(info)
-        except Exception:
-            print("!!! NO CONNECTION !!!")
+            
+        print(info)
+        # except Exception:
+        #     print("!!! NO CONNECTION !!!")
     
 if __name__ == "__main__":
     main()

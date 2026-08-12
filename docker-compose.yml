@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  host:
+    build:
+      context: ./host
+      dockerfile: Dockerfile
+    container_name: soundcheck_host
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SPOTIPY_REDIRECT_URI=http://127.0.0.1:8080/callback
+      - SPOTIPY_CLIENT_ID
+      - SPOTIPY_CLIENT_SECRET
+    volumes:
+      - ./host/conf.yml:/app/conf.yml:ro
+      - ./host/out:/app/out
+      - ./host/.cache:/app/.cache
+    ports:
+      - "4567:4567"
