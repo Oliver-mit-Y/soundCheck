@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
-      - SPOTIPY_REDIRECT_URI=http://127.0.0.1:8080/callback
+      - SPOTIPY_REDIRECT_URI=https://example.com/callback
       - SPOTIPY_CLIENT_ID
       - SPOTIPY_CLIENT_SECRET
     volumes:

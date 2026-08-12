@@ -4,26 +4,43 @@ set -euo pipefail
 cd /app
 mkdir -p out art
 
+start_server() {
+  echo "Starting server.py"
+  python server.py &
+  server_pid=$!
+  echo "server.py pid=${server_pid}"
+}
+
+start_main() {
+  echo "Starting main.py"
+  python main.py &
+  main_pid=$!
+  echo "main.py pid=${main_pid}"
+}
+
 cleanup() {
   echo "Stopping host processes..."
   kill -TERM "${server_pid:-}" "${main_pid:-}" 2>/dev/null || true
   wait "${server_pid:-}" "${main_pid:-}" 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
 
+trap 'echo "Signal received, shutting down..."; cleanup; exit 0' INT TERM
+
+# Start both services
+start_server
+start_main
+
+# Monitor loop: check PIDs and restart whichever stopped
 while true; do
-  echo "Starting server.py and main.py"
-  python server.py &
-  server_pid=$!
+  sleep 5
 
-  python main.py &
-  main_pid=$!
+  if ! kill -0 "${server_pid:-}" 2>/dev/null; then
+    echo "server.py (pid ${server_pid:-}) not running; restarting..."
+    start_server
+  fi
 
-  wait -n "$server_pid" "$main_pid"
-  status=$?
-  echo "One process exited with status $status"
-
-  cleanup
-  echo "Restarting processes in 2 seconds..."
-  sleep 2
- done
+  if ! kill -0 "${main_pid:-}" 2>/dev/null; then
+    echo "main.py (pid ${main_pid:-}) not running; restarting..."
+    start_main
+  fi
+done
