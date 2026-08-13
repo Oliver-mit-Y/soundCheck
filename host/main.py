@@ -101,7 +101,7 @@ def main():
         info = sp.current_playback()
         if info and info.get("is_playing"):
             info = {
-                "song_name": info["item"]["name"],
+                "song": info["item"]["name"],
                 "artist": info["item"]["artists"][0]["name"],
                 "album": info["item"]["album"]["name"],
                 "year": info["item"]["album"]["release_date"].split("-")[0],
