@@ -120,6 +120,12 @@ def main():
                     f.close()
                     print('ye')
                 last_img = info['img']
+        else: 
+            info = None
+            with open("./out/info.json", "w", encoding="utf-8") as f:
+                                json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
+                                f.close()
+                                
 
             
         print(info)

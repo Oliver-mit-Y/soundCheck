@@ -35,7 +35,7 @@ const int CHAIN_LENGTH = 1;
 const char* HARDWARE_MAPPING = "regular";  // oder "adafruit-hat"
 
 // Text-Balken-Konfiguration
-const int TEXT_BAR_HEIGHT = 16;  // Höhe des Text-Balkens in Pixeln
+const int TEXT_BAR_HEIGHT = 10;  // Höhe des Text-Balkens in Pixeln
 const Color TEXT_COLOR(255, 255, 0);  // Gelb
 const Color TEXT_BAR_COLOR(0, 0, 50);  // Dunkelblau für Hintergrund
 const int SCROLL_SPEED = 2;  // Pixel pro Frame
@@ -72,13 +72,10 @@ bool LoadGifFrames(const char* filename,
     std::vector<Magick::Image> coalesced;
     Magick::coalesceImages(&coalesced, images.begin(), images.end());
     
-    int gif_height = height - bar_height;
+    int gif_height = height;
     
     for (size_t i = 0; i < coalesced.size(); ++i) {
       Magick::Image& img = coalesced[i];
-      
-      // Resize auf Matrix-Grö±±±e (ohne Text-Balken)
-      img.scale(Magick::Geometry(width, gif_height));
       
       // Frame erstellen
       GifFrame frame;
@@ -99,7 +96,7 @@ bool LoadGifFrames(const char* filename,
       }
       
       // Text-Balken-Bereich mit Schwarz füllen (wird später überschrieben)
-      for (int y = gif_height; y < height; ++y) {
+      for (int y = height-TEXT_BAR_HEIGHT; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
           size_t idx = y * width + x;
           frame.pixels[idx] = Color(0, 0, 0);
@@ -154,7 +151,7 @@ void DrawTextBar(FrameCanvas* canvas,
   }
   
   // Text zeichnen
-  int text_y = height - 2;  // 2px Padding von unten
+  int text_y = height;
   DrawText(canvas, font, text_x, text_y, text_color, text);
   
   // Zweiter Text für kontinuierliches Scrollen (wenn erster rauslä±±uft)
