@@ -1,0 +1,50 @@
+# Makefile for gif_scroller_api (HTTP-API-driven GIF scroller)
+# This builds ONLY gif_scroller_api with HTTP+JSON support
+
+include ../config.mk
+
+# Compiler flags
+CXXFLAGS=-O3 $(CPU_ARCH_FLAGS) $(LTO_FLAGS) -W -Wall -Wextra -Wno-unused-parameter -D_FILE_OFFSET_BITS=64 -std=c++17
+
+# RGB Matrix library
+RGB_LIB_DISTRIBUTION=..
+RGB_INCDIR=$(RGB_LIB_DISTRIBUTION)/include
+RGB_LIBDIR=$(RGB_LIB_DISTRIBUTION)/lib
+RGB_LIBRARY_NAME=rgbmatrix
+RGB_LIBRARY=$(RGB_LIBDIR)/lib$(RGB_LIBRARY_NAME).a
+RGB_LDFLAGS=$(CPU_ARCH_FLAGS) $(LTO_FLAGS) -L$(RGB_LIBDIR) -l$(RGB_LIBRARY_NAME) -lrt -lm -lpthread
+
+# ImageMagick flags
+MAGICK_CXXFLAGS?=$(shell GraphicsMagick++-config --cppflags --cxxflags)
+MAGICK_CXXFLAGS := $(filter-out -Werror=implicit-function-declaration,$(MAGICK_CXXFLAGS))
+MAGICK_LDFLAGS?=$(shell GraphicsMagick++-config --ldflags --libs)
+
+# libcurl flags
+CURL_CXXFLAGS?=$(shell pkg-config --cflags libcurl)
+CURL_LDFLAGS?=$(shell pkg-config --libs libcurl)
+
+# nlohmann/json (header-only, no extra flags needed)
+JSON_CXXFLAGS?=-I/usr/include/nlohmann
+
+# Combined flags
+CXXFLAGS+=$(MAGICK_CXXFLAGS) $(CURL_CXXFLAGS) $(JSON_CXXFLAGS)
+LDFLAGS=$(MAGICK_LDFLAGS) $(CURL_LDFLAGS) $(RGB_LDFLAGS)
+
+BINARY=gif_scroller_api
+OBJECT=gif_scroller_api.o
+
+all: $(BINARY)
+
+$(RGB_LIBRARY): FORCE
+	$(MAKE) -C $(RGB_LIBDIR)
+
+$(BINARY): $(OBJECT) $(RGB_LIBRARY)
+	$(CXX) $(CXXFLAGS) $(OBJECT) -o $@ $(LDFLAGS)
+
+$(OBJECT): gif_scroller_api.cc
+	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) -c -o $@ $<
+
+clean:
+	rm -f $(OBJECT) $(BINARY)
+
+.PHONY: all clean FORCE
