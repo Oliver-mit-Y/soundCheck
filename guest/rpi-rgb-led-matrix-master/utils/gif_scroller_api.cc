@@ -401,13 +401,12 @@ int main(int argc, char* argv[]) {
   matrix_options.chain_length = CHAIN_LENGTH;
   matrix_options.parallel = 1;
   matrix_options.show_refresh_rate = false;
-  matrix_options.drop_privileges = false;
-  
+
   rgb_matrix::RuntimeOptions runtime_opt;
   runtime_opt.gpio_slowdown = 2;
   
-  Canvas* canvas = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
-  if (canvas == NULL) {
+  RGBMatrix* matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
+  if (matrix == NULL) {
     fprintf(stderr, "Error: Matrix could not be created\n");
     return 1;
   }
@@ -436,7 +435,7 @@ int main(int argc, char* argv[]) {
   
   std::vector<GifFrame> frames;
   if (!LoadGifFrames(temp_gif, MATRIX_COLS, MATRIX_ROWS, TEXT_BAR_HEIGHT, frames)) {
-    delete canvas;
+    delete matrix;
     return 1;
   }
   
@@ -444,11 +443,11 @@ int main(int argc, char* argv[]) {
   Font font;
   if (!font.LoadFont(FONT_PATH)) {
     fprintf(stderr, "Error: Font could not be loaded\n");
-    delete canvas;
+    delete matrix;
     return 1;
   }
   
-  FrameCanvas* offscreen = canvas->CreateFrameCanvas();
+  FrameCanvas* offscreen = matrix->CreateFrameCanvas();
   
   printf("Starting animation...\n");
   
@@ -519,7 +518,7 @@ int main(int argc, char* argv[]) {
                 text_x,
                 TEXT_COLOR);
     
-    offscreen = canvas->SwapOnVSync(offscreen);
+    offscreen = matrix->SwapOnVSync(offscreen);
     
     text_x -= g_config.text_scroll_speed;
     
@@ -551,7 +550,7 @@ int main(int argc, char* argv[]) {
   printf("\nAnimation ended.\n");
   
   offscreen->Clear();
-  delete canvas;
+  delete matrix;
   
   return 0;
 }
