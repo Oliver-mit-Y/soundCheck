@@ -191,21 +191,19 @@ bool DownloadAndSaveGif(const std::string& url, const std::string& output_file) 
 
 // ============= NO-SIGNAL IMAGE =============
 bool CreateNoSignalImage(const std::string& filename, int width, int height) {
-  try {
-    Magick::Image img(Magick::Geometry(width, height), Magick::Color("black"));
-    Magick::Quantum half_width = width / 2;
-    Magick::Quantum half_height = height / 2;
-    img.strokeColor("red");
-    img.fillColor(Magick::Color("transparent"));
-    img.draw(Magick::DrawableCircle(half_width, half_height, half_width - 10, half_height));
-    img.draw(Magick::DrawableLine(half_width - 15, half_height - 15, half_width + 15, half_height + 15));
-    img.draw(Magick::DrawableLine(half_width - 15, half_height + 15, half_width + 15, half_height - 15));
-    img.write(filename);
-    return true;
-  } catch (Magick::Error& e) {
-    fprintf(stderr, "Error creating no-signal image: %s\n", e.what());
+  // Use ImageMagick's convert command to generate a simple image
+  // This avoids Magick++ threading issues
+  std::string cmd = "convert -size " + std::to_string(width) + "x" + std::to_string(height) + 
+                    " xc:black -stroke red -strokewidth 2 " +
+                    "-draw \"line 0,0 " + std::to_string(width) + "," + std::to_string(height) + "\" " +
+                    "-draw \"line " + std::to_string(width) + ",0 0," + std::to_string(height) + "\" " +
+                    "\"" + filename + "\"";
+  int result = system(cmd.c_str());
+  if (result != 0) {
+    fprintf(stderr, "Failed to create no-signal image: %s\n", filename.c_str());
     return false;
   }
+  return true;
 }
 
 // ============= GIF FRAMES =============
@@ -382,6 +380,8 @@ bool ParseArguments(int argc, char* argv[]) {
 
 // ============= MAIN =============
 int main(int argc, char* argv[]) {
+  Magick::InitializeMagick(*argv);
+  
   g_config.gif_scroll_speed = 2;
   g_config.text_scroll_speed = 2;
   g_config.gif_speed_multiplier = 1.0f;
