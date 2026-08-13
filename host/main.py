@@ -57,9 +57,10 @@ def image_convert(img):
         hole_radius = 6
         draw.ellipse((32 - hole_radius, 32 - hole_radius, 32 + hole_radius, 32 + hole_radius), fill=0)
 
-        for angle in range(12):
+        frames = []
+        for angle in range(360):
             rotated = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            rotated_img = img_obj.rotate(-angle * 30, expand=False, fillcolor=(0, 0, 0, 0))
+            rotated_img = img_obj.rotate(-angle, expand=False, fillcolor=(0, 0, 0, 0))
             rotated.paste(rotated_img, (0, 0), rotated_img)
 
             composite = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -79,8 +80,16 @@ def image_convert(img):
             draw_hole.ellipse((32 - hole_radius, 32 - hole_radius, 32 + hole_radius, 32 + hole_radius), outline=(255, 255, 255, 255), width=1)
             final_img = Image.alpha_composite(final_img, center_hole)
 
-            output_path = output_dir / f"{angle + 1}.png"
-            final_img.save(output_path)
+            frames.append(final_img)
+
+        output_path = output_dir / "cover.gif"
+        frames[0].save(
+            output_path,
+            save_all=True,
+            append_images=frames[1:],
+            duration=50,
+            loop=0
+        )
 
 
 def main():
