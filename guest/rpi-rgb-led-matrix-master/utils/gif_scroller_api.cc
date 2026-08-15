@@ -14,6 +14,7 @@
 #include <Magick++.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <vector>
 #include <string>
@@ -25,6 +26,7 @@
 #include <thread>
 #include <mutex>
 #include <chrono>
+#include <algorithm>
 
 using rgb_matrix::RGBMatrix;
 using rgb_matrix::FrameCanvas;
@@ -55,6 +57,8 @@ struct Config {
   int text_scroll_speed;
   float gif_speed_multiplier;
   int api_poll_interval_ms;
+  std::string font_path;
+  int text_bar_height;
 } g_config;
 
 // ============= GLOBAL VARIABLES =============
@@ -206,86 +210,74 @@ bool CreateNoSignalImage(const std::string& filename, int width, int height) {
   return true;
 }
 
-// ============= GIF FRAMES =============
-struct GifFrame {
-  std::vector<Color> pixels;
-  int delay_ms;
-};
-
-bool LoadGifFrames(const char* filename, 
-                   int width, 
-                   int height, 
-                   int bar_height,
-                   std::vector<GifFrame>& frames) {
+// ============= ON-DEMAND GIF HELPERS =============
+bool PingGif(const char* filename, int& out_frame_count, std::vector<int>& out_delays, int& out_width, int& out_height) {
   try {
     std::vector<Magick::Image> images;
-    Magick::readImages(&images, filename);
-    
-    if (images.empty()) {
-      fprintf(stderr, "No frames in GIF found\n");
-      return false;
-    }
-    
-    std::vector<Magick::Image> coalesced;
-    Magick::coalesceImages(&coalesced, images.begin(), images.end());
-    
-    int gif_height = height - bar_height;
-    
-    for (size_t i = 0; i < coalesced.size(); ++i) {
-      Magick::Image& img = coalesced[i];
-      
-      img.scale(Magick::Geometry(width, gif_height));
-      
-      GifFrame frame;
-      frame.pixels.resize(width * height);
-      frame.delay_ms = static_cast<int>(img.animationDelay() * 10);
-      
-      for (int y = 0; y < gif_height; ++y) {
-        for (int x = 0; x < width; ++x) {
-          Magick::Color c = img.pixelColor(x, y);
-          size_t idx = y * width + x;
-          frame.pixels[idx] = Color(
-            ScaleQuantumToChar(c.redQuantum()),
-            ScaleQuantumToChar(c.greenQuantum()),
-            ScaleQuantumToChar(c.blueQuantum())
-          );
-        }
-      }
-      
-      for (int y = gif_height; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-          size_t idx = y * width + x;
-          frame.pixels[idx] = Color(0, 0, 0);
-        }
-      }
-      
-      frames.push_back(frame);
-      
-      if (i % 10 == 0) {
-        printf("  Frame %zu/%zu loaded\n", i, coalesced.size());
-      }
-    }
-    
-    printf("Total %zu frames loaded\n", frames.size());
+    Magick::pingImages(&images, filename);
+    if (images.empty()) return false;
+    out_frame_count = static_cast<int>(images.size());
+    out_width = images[0].columns();
+    out_height = images[0].rows();
+    out_delays.clear();
+    for (size_t i = 0; i < images.size(); ++i) out_delays.push_back(static_cast<int>(images[i].animationDelay() * 10));
     return true;
-    
-  } catch (Magick::Error& error) {
-    fprintf(stderr, "Error loading GIF: %s\n", error.what());
+  } catch (Magick::Error& err) {
+    fprintf(stderr, "Ping error: %s\n", err.what());
     return false;
   }
 }
 
-void CopyFrameToCanvas(const GifFrame& frame, 
-                       FrameCanvas* canvas, 
-                       int width, 
-                       int height) {
+bool LoadGifFrameAtIndex(const char* filename, int index, int width, int height, int bar_height, std::vector<Color>& out_pixels, int& out_delay_ms) {
+  try {
+    std::string fname = std::string(filename) + "[" + std::to_string(index) + "]";
+    Magick::Image img;
+    Magick::readImage(&img, fname);
+    out_delay_ms = static_cast<int>(img.animationDelay() * 10);
+
+    // scale image to width x (height-bar)
+    int gif_h = std::max(0, height - bar_height);
+    img.scale(Magick::Geometry(width, gif_h));
+
+    out_pixels.assign(width * height, Color(0,0,0));
+
+    int read_w = std::min(static_cast<int>(img.columns()), width);
+    int read_h = std::min(static_cast<int>(img.rows()), gif_h);
+
+    for (int y = 0; y < read_h; ++y) {
+      for (int x = 0; x < read_w; ++x) {
+        Magick::Color c = img.pixelColor(x, y);
+        size_t idx = y * width + x;
+        out_pixels[idx] = Color(
+          ScaleQuantumToChar(c.redQuantum()),
+          ScaleQuantumToChar(c.greenQuantum()),
+          ScaleQuantumToChar(c.blueQuantum())
+        );
+      }
+    }
+
+    // clear text bar area
+    for (int y = gif_h; y < height; ++y) {
+      for (int x = 0; x < width; ++x) out_pixels[y * width + x] = Color(0,0,0);
+    }
+
+    return true;
+  } catch (Magick::Error& err) {
+    fprintf(stderr, "Load frame %d error: %s\n", index, err.what());
+    return false;
+  }
+}
+
+void CopyPixelsToCanvas(const std::vector<Color>& pixels, FrameCanvas* canvas, int width, int height) {
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
-      const Color& c = frame.pixels[y * width + x];
+      const Color& c = pixels[y * width + x];
       canvas->SetPixel(x, y, c.r, c.g, c.b);
     }
   }
 }
+
+
 
 void DrawTextBar(FrameCanvas* canvas, 
                  int width, 
@@ -327,6 +319,8 @@ void PrintUsage(const char* prog) {
     "  --text-speed <int>           Text scroll speed in pixels/frame (default: 2)\n"
     "  --gif-multiplier <float>     GIF animation speed multiplier (default: 1.0)\n"
     "  --api-interval <ms>          API poll interval in milliseconds (default: 5000)\n",
+     "  --font-path <path>           Font path to use for text bar\n"
+     "  --bar-height <px>            Height of the text bar in pixels (default: 16)\n",
     prog);
 }
 
@@ -353,6 +347,10 @@ bool ParseArguments(int argc, char* argv[]) {
       g_config.gif_speed_multiplier = atof(argv[++i]);
     } else if (strcmp(argv[i], "--api-interval") == 0 && i + 1 < argc) {
       g_config.api_poll_interval_ms = atoi(argv[++i]);
+      } else if (strcmp(argv[i], "--font-path") == 0 && i + 1 < argc) {
+        g_config.font_path = argv[++i];
+      } else if (strcmp(argv[i], "--bar-height") == 0 && i + 1 < argc) {
+        g_config.text_bar_height = atoi(argv[++i]);
     } else {
       PrintUsage(argv[0]);
       return false;
@@ -373,6 +371,7 @@ bool ParseArguments(int argc, char* argv[]) {
     printf("%s%s", i > 0 ? "," : "", g_config.json_keys[i].c_str());
   }
   printf("\n  gif_speed=%d, text_speed=%d\n", g_config.gif_scroll_speed, g_config.text_scroll_speed);
+    printf("  font_path=%s, bar_height=%d\n", g_config.font_path.c_str(), g_config.text_bar_height);
   printf("  api_interval=%dms\n", g_config.api_poll_interval_ms);
   
   return true;
@@ -386,6 +385,8 @@ int main(int argc, char* argv[]) {
   g_config.text_scroll_speed = 2;
   g_config.gif_speed_multiplier = 1.0f;
   g_config.api_poll_interval_ms = 5000;
+  g_config.font_path = FONT_PATH;
+  g_config.text_bar_height = TEXT_BAR_HEIGHT;
   g_api_data.status = STATUS_HTTP_FAILED;
   
   if (!ParseArguments(argc, argv)) {
@@ -419,8 +420,8 @@ int main(int argc, char* argv[]) {
   const char* idle_gif = "/tmp/idle.gif";
   
   printf("Creating no-signal and idle images...\n");
-  CreateNoSignalImage(no_signal_gif, MATRIX_COLS, MATRIX_ROWS - TEXT_BAR_HEIGHT);
-  CreateNoSignalImage(idle_gif, MATRIX_COLS, MATRIX_ROWS - TEXT_BAR_HEIGHT);  // User can replace with idle.* file
+  CreateNoSignalImage(no_signal_gif, MATRIX_COLS, MATRIX_ROWS - g_config.text_bar_height);
+  CreateNoSignalImage(idle_gif, MATRIX_COLS, MATRIX_ROWS - g_config.text_bar_height);  // User can replace with idle.* file
   
   printf("Starting API poller thread...\n");
   std::thread api_thread(ApiPollerThread);
@@ -430,18 +431,26 @@ int main(int argc, char* argv[]) {
   
   if (!DownloadAndSaveGif(g_config.api_gif_url, temp_gif)) {
     printf("Failed to download initial GIF, using no-signal\n");
-    system(("cp " + std::string(no_signal_gif) + " " + std::string(temp_gif)).c_str());
+    system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
+  }
+
+  int frame_count = 0;
+  std::vector<int> frame_delays;
+  int gif_w = 0, gif_h = 0;
+  if (!PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
+    // fallback to no_signal
+    printf("Ping failed for downloaded GIF, using no-signal\n");
+    system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
+    if (!PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
+      fprintf(stderr, "Failed to ping fallback no-signal GIF\n");
+      delete matrix;
+      return 1;
+    }
   }
   
-  std::vector<GifFrame> frames;
-  if (!LoadGifFrames(temp_gif, MATRIX_COLS, MATRIX_ROWS, TEXT_BAR_HEIGHT, frames)) {
-    delete matrix;
-    return 1;
-  }
-  
-  printf("Loading font: %s...\n", FONT_PATH);
+  printf("Loading font: %s...\n", g_config.font_path.c_str());
   Font font;
-  if (!font.LoadFont(FONT_PATH)) {
+  if (!font.LoadFont(g_config.font_path.c_str())) {
     fprintf(stderr, "Error: Font could not be loaded\n");
     delete matrix;
     return 1;
@@ -452,11 +461,18 @@ int main(int argc, char* argv[]) {
   printf("Starting animation...\n");
   
   int text_x = MATRIX_COLS;
-  size_t frame_index = 0;
+  int frame_index = 0;
   struct timespec last_frame_time;
   clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
   std::string current_img_key;
   ApiStatus last_status = STATUS_HTTP_FAILED;
+
+  // on-demand frame buffer
+  std::vector<Color> current_pixels;
+  int current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
+  struct stat gif_stat;
+  time_t last_mtime = 0;
+  if (stat(temp_gif, &gif_stat) == 0) last_mtime = gif_stat.st_mtime;
   
   while (!interrupt_received) {
     {
@@ -469,36 +485,53 @@ int main(int argc, char* argv[]) {
       if (status_changed || img_changed) {
         last_status = g_api_data.status;
         current_img_key = g_api_data.current_img_key;
-        frames.clear();
-        
+        // Reset on-demand buffers
+        current_pixels.clear();
+        frame_index = 0;
+        text_x = MATRIX_COLS;
+
         if (g_api_data.status == STATUS_VALID) {
           printf("Valid data, downloading GIF...\n");
-          if (DownloadAndSaveGif(g_config.api_gif_url, temp_gif) &&
-              LoadGifFrames(temp_gif, MATRIX_COLS, MATRIX_ROWS, TEXT_BAR_HEIGHT, frames)) {
-            frame_index = 0;
-            text_x = MATRIX_COLS;
-            clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
+          if (DownloadAndSaveGif(g_config.api_gif_url, temp_gif)) {
+            if (!PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
+              fprintf(stderr, "Ping failed after download, using no-signal\n");
+              system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
+              PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
+            }
           } else {
-            printf("Failed to load GIF, showing no-signal\n");
-            LoadGifFrames(no_signal_gif, MATRIX_COLS, MATRIX_ROWS, TEXT_BAR_HEIGHT, frames);
+            printf("Failed to download GIF, showing no-signal\n");
+            system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
+            PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
           }
+          current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
+          clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
         } else if (g_api_data.status == STATUS_JSON_NULL) {
           printf("JSON returned null, showing idle\n");
-          LoadGifFrames(idle_gif, MATRIX_COLS, MATRIX_ROWS, TEXT_BAR_HEIGHT, frames);
+          system((std::string("cp ") + idle_gif + " " + temp_gif).c_str());
+          PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
+          current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
         } else {
           printf("HTTP failed, showing no-signal\n");
-          LoadGifFrames(no_signal_gif, MATRIX_COLS, MATRIX_ROWS, TEXT_BAR_HEIGHT, frames);
+          system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
+          PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
+          current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
         }
       }
     }
     
-    if (frames.empty()) {
+    if (frame_count <= 0) {
       usleep(100000);
       continue;
     }
-    
-    const GifFrame& current_frame = frames[frame_index];
-    CopyFrameToCanvas(current_frame, offscreen, MATRIX_COLS, MATRIX_ROWS);
+
+    // Load current frame on-demand if not loaded
+    if (current_pixels.empty()) {
+      if (!LoadGifFrameAtIndex(temp_gif, frame_index, MATRIX_COLS, MATRIX_ROWS, g_config.text_bar_height, current_pixels, current_frame_delay)) {
+        // failed to load frame -> skip drawing GIF this iteration
+      }
+    }
+
+    if (!current_pixels.empty()) CopyPixelsToCanvas(current_pixels, offscreen, MATRIX_COLS, MATRIX_ROWS);
     
     std::string display_text = "Loading...";
     {
@@ -509,14 +542,14 @@ int main(int argc, char* argv[]) {
     }
     
     DrawTextBar(offscreen, 
-                MATRIX_COLS, 
-                MATRIX_ROWS, 
-                TEXT_BAR_HEIGHT,
-                TEXT_BAR_COLOR,
-                font,
-                display_text.c_str(),
-                text_x,
-                TEXT_COLOR);
+          MATRIX_COLS, 
+          MATRIX_ROWS, 
+          g_config.text_bar_height,
+          TEXT_BAR_COLOR,
+          font,
+          display_text.c_str(),
+          text_x,
+          TEXT_COLOR);
     
     offscreen = matrix->SwapOnVSync(offscreen);
     
@@ -537,10 +570,12 @@ int main(int argc, char* argv[]) {
     float elapsed_ms = (current_time.tv_sec - last_frame_time.tv_sec) * 1000.0f +
                        (current_time.tv_nsec - last_frame_time.tv_nsec) / 1000000.0f;
     
-    float frame_delay = frames[frame_index].delay_ms / g_config.gif_speed_multiplier;
-    
+    float frame_delay = current_frame_delay / g_config.gif_speed_multiplier;
+
     if (elapsed_ms >= frame_delay) {
-      frame_index = (frame_index + 1) % frames.size();
+      frame_index = (frame_index + 1) % std::max(1, frame_count);
+      current_pixels.clear();
+      if (!frame_delays.empty()) current_frame_delay = frame_delays[frame_index];
       clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
     }
     

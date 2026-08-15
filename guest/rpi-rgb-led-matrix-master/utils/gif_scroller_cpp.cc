@@ -10,11 +10,13 @@
 #include "graphics.h"
 
 #include <Magick++.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 using rgb_matrix::RGBMatrix;
 using rgb_matrix::FrameCanvas;
@@ -24,22 +26,20 @@ using rgb_matrix::Font;
 using rgb_matrix::DrawText;
 
 // ============= KONFIGURATION =============
-const char* GIF_FILE = "animation.gif";
-const char* TEXT = "Dies ist ein langer scrollender Text für die LED-Matrix";
-const char* FONT_PATH = "fonts/7x13.bdf";
-
+const char* DEFAULT_GIF_FILE = "animation.gif";
+const char* DEFAULT_TEXT = "Dies ist ein langer scrollender Text für die LED-Matrix";
+const char* DEFAULT_FONT_PATH = "fonts/font.bdf";
 // Matrix-Konfiguration
 const int MATRIX_ROWS = 64;
 const int MATRIX_COLS = 64;
 const int CHAIN_LENGTH = 1;
 const char* HARDWARE_MAPPING = "regular";  // oder "adafruit-hat"
 
-// Text-Balken-Konfiguration
-const int TEXT_BAR_HEIGHT = 10;  // Höhe des Text-Balkens in Pixeln
+// Text-Balken-/Animation-Konfiguration (can be overridden via CLI)
 const Color TEXT_COLOR(255, 255, 0);  // Gelb
-const Color TEXT_BAR_COLOR(0, 0, 50);  // Dunkelblau für Hintergrund
+const Color DEFAULT_TEXT_BAR_COLOR(0, 0, 50);  // Dunkelblau für Hintergrund
 const int SCROLL_SPEED = 2;  // Pixel pro Frame
-const float GIF_SPEED = 1.0f;  // 1.0 = Original, 2.0 = 2×± schneller
+const float GIF_SPEED = 1.0f;  // 1.0 = Original, 2.0 = 2× schneller
 
 // ============= GLOBALE VARIABLEN =============
 volatile bool interrupt_received = false;
@@ -49,84 +49,78 @@ static void InterruptHandler(int signo) {
 }
 
 // ============= GIF FRAMES LADEN =============
-struct GifFrame {
-  std::vector<Color> pixels;  // Pre-allocierte Pixel
-  int delay_ms;  // Frame-Delay in ms
-};
-
-bool LoadGifFrames(const char* filename, 
-                   int width, 
-                   int height, 
-                   int bar_height,
-                   std::vector<GifFrame>& frames) {
+// We'll only read GIF metadata (ping) up front, and load individual frames
+// on-demand using the ImageMagick frame index syntax ("file.gif[3]").
+bool PingGif(const char* filename, int& out_frame_count, std::vector<int>& out_delays, int& out_width, int& out_height) {
   try {
     std::vector<Magick::Image> images;
-    Magick::readImages(&images, filename);
-    
+    Magick::pingImages(&images, filename);
     if (images.empty()) {
       fprintf(stderr, "Keine Frames in GIF gefunden\n");
       return false;
     }
-    
-    // Coalesce für korrekte Animation (alle Frames vollständig)
-    std::vector<Magick::Image> coalesced;
-    Magick::coalesceImages(&coalesced, images.begin(), images.end());
-    
-    int gif_height = height;
-    
-    for (size_t i = 0; i < coalesced.size(); ++i) {
-      Magick::Image& img = coalesced[i];
-      
-      // Frame erstellen
-      GifFrame frame;
-      frame.pixels.resize(width * height);
-      frame.delay_ms = static_cast<int>(img.animationDelay() * 10);  // 1/100s → ms
-      
-      // Pixel kopieren (nur GIF-Bereich, Rest transparent/schwarz)
-      for (int y = 0; y < gif_height; ++y) {
-        for (int x = 0; x < width; ++x) {
-          Magick::Color c = img.pixelColor(x, y);
-          size_t idx = y * width + x;
-          frame.pixels[idx] = Color(
-            ScaleQuantumToChar(c.redQuantum()),
-            ScaleQuantumToChar(c.greenQuantum()),
-            ScaleQuantumToChar(c.blueQuantum())
-          );
-        }
-      }
-      
-      // Text-Balken-Bereich mit Schwarz füllen (wird später überschrieben)
-      for (int y = height-TEXT_BAR_HEIGHT; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-          size_t idx = y * width + x;
-          frame.pixels[idx] = Color(0, 0, 0);
-        }
-      }
-      
-      frames.push_back(frame);
-      
-      if (i % 10 == 0) {
-        printf("  Frame %zu/%zu geladen\n", i, coalesced.size());
+
+    out_frame_count = static_cast<int>(images.size());
+    out_width = images[0].columns();
+    out_height = images[0].rows();
+    out_delays.clear();
+    for (size_t i = 0; i < images.size(); ++i) {
+      out_delays.push_back(static_cast<int>(images[i].animationDelay() * 10));
+    }
+    printf("Ping: %d frames, size=%dx%d\n", out_frame_count, out_width, out_height);
+    return true;
+  } catch (Magick::Error& err) {
+    fprintf(stderr, "Ping-Fehler: %s\n", err.what());
+    return false;
+  }
+}
+
+// Load a single frame (by index) into pixel buffer. Uses filename[index] to avoid loading all frames.
+bool LoadGifFrameAtIndex(const char* filename, int index, int width, int height, int bar_height, std::vector<Color>& out_pixels, int& out_delay_ms) {
+  try {
+    std::string fname = std::string(filename) + "[" + std::to_string(index) + "]";
+    Magick::Image img;
+    Magick::readImage(&img, fname);
+    out_delay_ms = static_cast<int>(img.animationDelay() * 10);
+
+    out_pixels.assign(width * height, Color(0,0,0));
+
+    int read_w = std::min(static_cast<int>(img.columns()), width);
+    int read_h = std::min(static_cast<int>(img.rows()), height);
+
+    for (int y = 0; y < read_h; ++y) {
+      for (int x = 0; x < read_w; ++x) {
+        Magick::Color c = img.pixelColor(x, y);
+        size_t idx = y * width + x;
+        out_pixels[idx] = Color(
+          ScaleQuantumToChar(c.redQuantum()),
+          ScaleQuantumToChar(c.greenQuantum()),
+          ScaleQuantumToChar(c.blueQuantum())
+        );
       }
     }
-    
-    printf("Insgesamt %zu Frames geladen\n", frames.size());
+
+    // Ensure text-bar area is cleared (will be overwritten by DrawTextBar)
+    for (int y = height - bar_height; y < height; ++y) {
+      if (y < 0) continue;
+      for (int x = 0; x < width; ++x) {
+        size_t idx = y * width + x;
+        out_pixels[idx] = Color(0,0,0);
+      }
+    }
+
     return true;
-    
-  } catch (Magick::Error& error) {
-    fprintf(stderr, "Fehler beim Laden der GIF: %s\n", error.what());
+  } catch (Magick::Error& err) {
+    fprintf(stderr, "Fehler beim Laden Frame %d: %s\n", index, err.what());
     return false;
   }
 }
 
 // ============= FRAME IN CANVAS KOPIEREN =============
-void CopyFrameToCanvas(const GifFrame& frame, 
-                       FrameCanvas* canvas, 
-                       int width, 
-                       int height) {
+void CopyPixelsToCanvas(const std::vector<Color>& pixels, FrameCanvas* canvas, int width, int height) {
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
-      const Color& c = frame.pixels[y * width + x];
+      const Color& c = pixels[y * width + x];
       canvas->SetPixel(x, y, c.r, c.g, c.b);
     }
   }
@@ -151,7 +145,7 @@ void DrawTextBar(FrameCanvas* canvas,
   }
   
   // Text zeichnen
-  int text_y = height;
+  int text_y = height - (bar_height / 2);
   DrawText(canvas, font, text_x, text_y, text_color, text);
   
   // Zweiter Text für kontinuierliches Scrollen (wenn erster rauslä±±uft)
@@ -194,16 +188,28 @@ int main(int argc, char* argv[]) {
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
   
-  printf("Lade GIF: %s...\n", GIF_FILE);
-  std::vector<GifFrame> frames;
-  if (!LoadGifFrames(GIF_FILE, MATRIX_COLS, MATRIX_ROWS, TEXT_BAR_HEIGHT, frames)) {
+  // --- CLI args: [gif_path] [bar_height] [font_path] [text]
+  const char* gif_path = DEFAULT_GIF_FILE;
+  int text_bar_height = 10;
+  const char* font_path = DEFAULT_FONT_PATH;
+  const char* text_ptr = DEFAULT_TEXT;
+  if (argc > 1) gif_path = argv[1];
+  if (argc > 2) text_bar_height = atoi(argv[2]);
+  if (argc > 3) font_path = argv[3];
+  if (argc > 4) text_ptr = argv[4];
+
+  printf("Pinge GIF: %s...\n", gif_path);
+  int frame_count = 0;
+  std::vector<int> frame_delays;
+  int gif_w = 0, gif_h = 0;
+  if (!PingGif(gif_path, frame_count, frame_delays, gif_w, gif_h)) {
     delete canvas;
     return 1;
   }
-  
-  printf("Lade Font: %s...\n", FONT_PATH);
+
+  printf("Lade Font: %s...\n", font_path);
   Font font;
-  if (!font.LoadFont(FONT_PATH)) {
+  if (!font.LoadFont(font_path)) {
     fprintf(stderr, "Fehler: Font konnte nicht geladen werden\n");
     delete canvas;
     return 1;
@@ -213,30 +219,51 @@ int main(int argc, char* argv[]) {
   FrameCanvas* offscreen = canvas->CreateFrameCanvas();
   
   printf("Starte Animation...\n");
-  
+
   // Animations-Variablen
-  int text_x = MATRIX_COLS;  // Startposition Text (rechts auÃ±erhalb)
-  size_t frame_index = 0;
+  int text_x = MATRIX_COLS;  // Startposition Text (rechts außerhalb)
+  int frame_index = 0;
+  std::vector<Color> current_pixels;
+  int current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
   struct timespec last_frame_time;
   clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
+
+  // Track GIF file modification to allow reloading
+  struct stat gif_stat;
+  time_t last_mtime = 0;
+  if (stat(gif_path, &gif_stat) == 0) last_mtime = gif_stat.st_mtime;
+
+  // Pre-load first frame
+  if (frame_count > 0) {
+    if (!LoadGifFrameAtIndex(gif_path, frame_index, MATRIX_COLS, MATRIX_ROWS, text_bar_height, current_pixels, current_frame_delay)) {
+      fprintf(stderr, "Warnung: Erstes Frame konnte nicht geladen werden\n");
+    }
+  }
   
   while (!interrupt_received) {
     // ============= GIF FRAME =============
-    const GifFrame& current_frame = frames[frame_index];
-    
-    // Frame in Canvas kopieren
-    CopyFrameToCanvas(current_frame, offscreen, MATRIX_COLS, MATRIX_ROWS);
+    // Only load a new frame when the frame index changed (on-demand)
+    if (current_pixels.empty()) {
+      if (!LoadGifFrameAtIndex(gif_path, frame_index, MATRIX_COLS, MATRIX_ROWS, text_bar_height, current_pixels, current_frame_delay)) {
+        // leave canvas as-is if load fails
+      }
+    }
+
+    // Copy current pixels into canvas
+    if (!current_pixels.empty()) {
+      CopyPixelsToCanvas(current_pixels, offscreen, MATRIX_COLS, MATRIX_ROWS);
+    }
     
     // ============= TEXT SCROLLING =============
     DrawTextBar(offscreen, 
-                MATRIX_COLS, 
-                MATRIX_ROWS, 
-                TEXT_BAR_HEIGHT,
-                TEXT_BAR_COLOR,
-                font,
-                TEXT,
-                text_x,
-                TEXT_COLOR);
+          MATRIX_COLS, 
+          MATRIX_ROWS, 
+          text_bar_height,
+          DEFAULT_TEXT_BAR_COLOR,
+          font,
+          text_ptr,
+          text_x,
+          TEXT_COLOR);
     
     // ============= SWAP =============
     offscreen = canvas->SwapOnVSync(offscreen);
@@ -247,7 +274,7 @@ int main(int argc, char* argv[]) {
     
     // Text-Breite approximieren für Wrap
     int approx_text_width = 0;
-    for (const char* p = TEXT; *p; ++p) {
+    for (const char* p = text_ptr; *p; ++p) {
       approx_text_width += font.CharacterWidth(*p);
     }
     
@@ -262,11 +289,31 @@ int main(int argc, char* argv[]) {
     float elapsed_ms = (current_time.tv_sec - last_frame_time.tv_sec) * 1000.0f +
                        (current_time.tv_nsec - last_frame_time.tv_nsec) / 1000000.0f;
     
-    float frame_delay = frames[frame_index].delay_ms / GIF_SPEED;
-    
+    float frame_delay = current_frame_delay / GIF_SPEED;
+
     if (elapsed_ms >= frame_delay) {
-      frame_index = (frame_index + 1) % frames.size();
+      // advance to next frame
+      frame_index = (frame_index + 1) % std::max(1, frame_count);
+      // mark pixels empty so next loop will load it
+      current_pixels.clear();
+      // update expected delay if we have metadata
+      if (!frame_delays.empty()) current_frame_delay = frame_delays[frame_index];
       clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
+    }
+
+    // Check for GIF file changes; if changed, re-ping and restart
+    if (stat(gif_path, &gif_stat) == 0) {
+      if (gif_stat.st_mtime != last_mtime) {
+        printf("GIF changed on disk; reloading metadata...\n");
+        last_mtime = gif_stat.st_mtime;
+        if (!PingGif(gif_path, frame_count, frame_delays, gif_w, gif_h)) {
+          fprintf(stderr, "Fehler beim Re-Pingen der GIF\n");
+        } else {
+          frame_index = 0;
+          current_pixels.clear();
+          if (!frame_delays.empty()) current_frame_delay = frame_delays[0];
+        }
+      }
     }
     
     // Framerate-Begrenzung (optional, für Konsistenz)
