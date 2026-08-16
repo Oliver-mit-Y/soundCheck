@@ -2,6 +2,7 @@
 Description=SoundCheck RGB Matrix GIF/Text guest
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -15,18 +16,18 @@ ExecStart=/home/zero/soundCheck/guest/rpi-rgb-led-matrix-master/utils/gif-and-te
   --led-slowdown-gpio=2 \
   --led-brightness=80 \
   --led-gpio-mapping=adafruit-hat-pwm \
-  --json-url=http://192.168.178:4567/api/info \
-  --gif-url=http://192.168.178:4567/api/art/cover.gif \
+  --json-url=http://127.0.0.1:4567/api/info \
+  --gif-url=http://127.0.0.1:4567/api/art/cover.gif \
   --keys=song,artist,album,year \
-  --font=/home/zero/soundCheck/guest/rpi-rgb-led-matrix-master/fonts/font.bdf \
+  --font=/home/zero/soundCheck/guest/rpi-rgb-led-matrix-master/fonts/5x7.bdf \
   --idle-image=/home/zero/soundCheck/guest/idle-small.gif \
   --text-bar-height=8 \
   --scroll-speed=2 \
   --gif-speed=900 \
   --poll-ms=3000
-Restart=on-failure
-RestartSec=5
+Restart=no
 KillSignal=SIGINT
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target
