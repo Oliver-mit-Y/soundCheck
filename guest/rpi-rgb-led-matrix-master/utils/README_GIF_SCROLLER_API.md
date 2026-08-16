@@ -1,129 +1,55 @@
-# gif_scroller_api
+# GIF + JSON Text API Scroller
 
-API-driven GIF display for a 64x64 RGB LED matrix.
-
-The program polls a JSON metadata endpoint and downloads a GIF endpoint whenever the JSON payload changes. The GIF is scaled to fill the whole matrix. A black text bar is drawn over the bottom of the GIF, and configured JSON fields scroll across that bar.
-
-## Build Requirements
-
-On Raspberry Pi OS:
-
-```bash
-sudo apt update
-sudo apt install -y \
-  build-essential \
-  python3-dev \
-  libgraphicsmagick++-dev \
-  libcurl4-openssl-dev \
-  nlohmann-json3-dev \
-  pkg-config
-```
+`gif-and-text-api` shows a GIF/image from an API across the full RGB matrix and overlays a small scrolling text bar at the bottom. The GIF is decoded into RAM only when the JSON response changes, so normal playback does not wait on network or image decoding.
 
 ## Build
 
-```bash
+Install the native dependencies on the Raspberry Pi:
+
+```sh
+sudo apt-get install libgraphicsmagick++-dev libcurl4-openssl-dev
+```
+
+Build from the utils directory:
+
+```sh
 cd guest/rpi-rgb-led-matrix-master/utils
 make -f Makefile.gif_api
 ```
 
-This creates `gif_scroller_api`.
+## Run
 
-## Usage
-
-```bash
-sudo ./gif_scroller_api \
-  --gif-url "http://192.168.1.100:4567/api/art/cover.gif" \
-  --json-url "http://192.168.1.100:4567/api/info" \
-  --keys "song_name,artist,album,year" \
-  --led-gpio-mapping adafruit-hat-pwm \
-  --led-rows 64 \
-  --led-cols 64 \
-  --led-chain 1 \
-  --led-slowdown-gpio 2 \
-  --text-speed 2 \
-  --gif-multiplier 1.0 \
-  --api-interval 5000 \
-  --idle-path "/home/pi/idle.gif"
+```sh
+sudo ./gif-and-text-api \
+  --led-rows=32 --led-cols=64 --led-chain=1 --led-slowdown-gpio=4 \
+  --json-url=http://host:8080/info.json \
+  --gif-url=http://host:8080/animation.gif \
+  --keys=artist,title,album \
+  --font=../fonts/5x7.bdf \
+  --text-bar-height=8 \
+  --scroll-speed=7 \
+  --gif-speed=-1
 ```
 
-Arguments:
+All standard `rpi-rgb-led-matrix` flags such as `--led-rows`, `--led-cols`, `--led-chain`, `--led-parallel`, `--led-brightness`, `--led-hardware-mapping`, `--led-gpio-mapping`, and `--led-slowdown-gpio` can be passed through unchanged.
 
-- `--gif-url <url>`: HTTP endpoint returning GIF bytes, for example `/api/art/cover.gif`.
-- `--json-url <url>`: HTTP endpoint returning metadata JSON, for example `/api/info`.
-- `--keys <key1,key2,...>`: JSON fields to show in the scrolling text.
-- `--text-speed <int>`: Text scroll speed in pixels per frame. Default: `2`.
-- `--gif-multiplier <float>`: GIF animation speed multiplier. `1.0` is original speed, `2.0` is twice as fast. Default: `1.0`.
-- `--api-interval <ms>`: Metadata polling interval. Default: `5000`.
-- `--font-path <path>`: BDF font path. Default: `../fonts/7x13.bdf` when running from `utils`.
-- `--bar-height <px>`: Bottom text bar height. Default: `16`.
-- `--idle-path <path>`: Optional local image/GIF to show when the JSON endpoint returns `null`.
-- `--gif-speed <int>`: Accepted for compatibility, but not used. The GIF fills the canvas and does not spatially scroll.
-- `--led-gpio-mapping`, `--led-rows`, `--led-cols`, `--led-chain`, and other `--led-*` flags are passed through to the RGB matrix library. Use the same values that worked with the examples.
+## Options
 
-## API Contract
+- `--keys=key1,key2,key3`: JSON keys to display as `key:value` pairs.
+- `--json-url=URL`: API endpoint returning a flat JSON object or `null`.
+- `--gif-url=URL`: API endpoint returning the current GIF/image.
+- `--font=PATH`: BDF font for the scrolling text.
+- `--text-bar-height=N`: bottom bar height in pixels. It is automatically raised to at least the font height.
+- `--scroll-speed=N`: approximate letters per second. Positive scrolls right to left, negative left to right.
+- `--gif-speed=N`: override GIF frame delay in milliseconds. Use `-1` to keep the GIF timing.
+- `--idle-image=PATH`: optional local GIF/PNG/JPG shown when the JSON endpoint returns exactly `null`.
+- `--poll-ms=N`: JSON polling interval. Default is `1000`.
+- `--text-color=r,g,b`: text color. Default is white.
+- `--bar-color=r,g,b`: text bar background. Default is black.
+- `--letter-spacing=N`: extra pixel spacing between letters.
 
-The GIF endpoint should return raw image bytes:
+## Behavior
 
-```bash
-curl http://192.168.1.100:4567/api/art/cover.gif > test.gif
-```
+When the JSON changes, the program immediately builds the new scroll text and downloads/decode the GIF again. The previously loaded animation keeps playing while the new one is being fetched and decoded. If the JSON endpoint returns `null`, the text is hidden and `--idle-image` is shown if provided.
 
-The JSON endpoint should return an object with an `img` field when something is playing:
-
-```json
-{
-  "img": "https://i.scdn.co/image/...",
-  "song_name": "Bohemian Rhapsody",
-  "artist": "Queen",
-  "album": "A Night at the Opera",
-  "year": "1975"
-}
-```
-
-The full JSON payload is used as the change token. Any metadata change causes the Pi to download the GIF again and reset animation playback.
-
-When nothing is playing, return:
-
-```json
-null
-```
-
-In that state, the matrix is cleared. If `--idle-path` is set, that local image/GIF is shown instead.
-
-If the API request, GIF download, GIF ping, or frame decoding fails, the matrix displays `error` text.
-
-## Performance Notes
-
-- The program pings image metadata first, then decodes only the frame it needs.
-- It does not load all GIF frames into memory at startup.
-- Rendering uses `SwapOnVSync()` double-buffering.
-- The text bar intentionally overlays the bottom of the GIF.
-
-## Systemd Example
-
-```ini
-[Unit]
-Description=LED GIF Scroller (API-driven)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/home/pi/soundCheck/guest/rpi-rgb-led-matrix-master/utils
-ExecStart=/home/pi/soundCheck/guest/rpi-rgb-led-matrix-master/utils/gif_scroller_api \
-  --gif-url "http://192.168.1.100:4567/api/art/cover.gif" \
-  --json-url "http://192.168.1.100:4567/api/info" \
-  --keys "song_name,artist,album,year" \
-  --led-gpio-mapping adafruit-hat-pwm \
-  --led-rows 64 \
-  --led-cols 64 \
-  --led-chain 1 \
-  --led-slowdown-gpio 2 \
-  --api-interval 5000
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
+If fetching or decoding fails, the bottom text changes to `error` and the last successfully loaded animation remains visible.
