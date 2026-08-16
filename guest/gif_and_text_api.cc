@@ -444,7 +444,7 @@ static void FillRect(FrameCanvas *canvas, int x0, int y0, int x1, int y1,
 
 static void RenderFrame(FrameCanvas *canvas, const Animation &animation,
                         size_t frame_index, int bar_y, int bar_height,
-                        const Color &bar_color) {
+                        const Color &bar_color, bool draw_bar) {
   const Frame &frame = animation.frames[frame_index];
   for (int y = 0; y < animation.height; ++y) {
     for (int x = 0; x < animation.width; ++x) {
@@ -452,7 +452,9 @@ static void RenderFrame(FrameCanvas *canvas, const Animation &animation,
       canvas->SetPixel(x, y, p.r, p.g, p.b);
     }
   }
-  FillRect(canvas, 0, bar_y, animation.width, animation.height, bar_color);
+  if (draw_bar) {
+    FillRect(canvas, 0, bar_y, animation.width, animation.height, bar_color);
+  }
 }
 
 static void PollApis(const Config config, SharedState *state,
@@ -698,11 +700,14 @@ int main(int argc, char *argv[]) {
         next_gif_frame_ms = now + current_animation->frames[frame_index].delay_ms;
       }
       RenderFrame(offscreen, *current_animation, frame_index, bar_y,
-                  config.text_bar_height, config.bar_color);
+                  config.text_bar_height, config.bar_color,
+                  !current_text.empty());
     } else {
       offscreen->Fill(0, 0, 0);
-      FillRect(offscreen, 0, bar_y, matrix->width(), matrix->height(),
-               config.bar_color);
+      if (!current_text.empty()) {
+        FillRect(offscreen, 0, bar_y, matrix->width(), matrix->height(),
+                 config.bar_color);
+      }
     }
 
     if (!current_text.empty()) {
