@@ -58,7 +58,9 @@ def image_convert(img):
         draw.ellipse((32 - hole_radius, 32 - hole_radius, 32 + hole_radius, 32 + hole_radius), fill=0)
 
         frames = []
-        for angle in range(48):
+        frameint=48
+        for angle in range(frameint):
+            angle=int(360/frameint*angle)
             rotated = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
             rotated_img = img_obj.rotate(-angle, expand=False, fillcolor=(0, 0, 0, 0))
             rotated.paste(rotated_img, (0, 0), rotated_img)
