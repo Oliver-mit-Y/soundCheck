@@ -1,22 +1,12 @@
 # gif_scroller_api
 
-A high-performance GIF scroller for RGB LED matrices that fetches animated GIFs and text data from HTTP APIs, with dynamic content refresh.
+API-driven GIF display for a 64x64 RGB LED matrix.
 
-## Features
-
-- **HTTP API Integration**: Fetches GIFs and metadata from HTTP endpoints
-- **JSON Parsing**: Extracts and displays configurable JSON keys
-- **Dynamic Content Refresh**: Automatically detects and reloads GIFs when the `img` key changes
-- **Fallback Handling**: 
-  - Shows `no-signal.gif` if HTTP request fails
-  - Shows `idle.gif` when JSON returns `null` for the `img` key
-- **Configurable Speed**: Adjustable GIF animation speed and text scroll speed via command-line args
-- **Text Formatting**: Displays JSON keys as `key1: value; key2: value; ...`
-- **Continuous Looping**: Both GIF and text scroll infinitely
+The program polls a JSON metadata endpoint and downloads a GIF endpoint whenever the JSON payload changes. The GIF is scaled to fill the whole matrix. A black text bar is drawn over the bottom of the GIF, and configured JSON fields scroll across that bar.
 
 ## Build Requirements
 
-On Raspberry Pi OS (or similar):
+On Raspberry Pi OS:
 
 ```bash
 sudo apt update
@@ -29,158 +19,81 @@ sudo apt install -y \
   pkg-config
 ```
 
-## Building
+## Build
 
 ```bash
 cd guest/rpi-rgb-led-matrix-master/utils
 make -f Makefile.gif_api
 ```
 
-This creates the `gif_scroller_api` binary.
+This creates `gif_scroller_api`.
 
 ## Usage
 
 ```bash
 sudo ./gif_scroller_api \
-  --gif-url "http://192.168.1.100:5000/api/gif" \
-  --json-url "http://192.168.1.100:5000/api/status" \
-  --keys "song,artist,album" \
-  --gif-speed 2 \
+  --gif-url "http://192.168.1.100:4567/api/art/cover.gif" \
+  --json-url "http://192.168.1.100:4567/api/info" \
+  --keys "song_name,artist,album,year" \
   --text-speed 2 \
   --gif-multiplier 1.0 \
-  --api-interval 5000
+  --api-interval 5000 \
+  --idle-path "/home/pi/idle.gif"
 ```
 
-### Arguments
+Arguments:
 
-- `--gif-url <url>` (required): HTTP endpoint that returns a GIF file
-- `--json-url <url>` (required): HTTP endpoint that returns JSON with metadata
-- `--keys <key1,key2,...>` (required): Comma-separated JSON keys to display
-- `--gif-speed <int>`: GIF scroll speed in pixels per frame (default: 2)
-- `--text-speed <int>`: Text scroll speed in pixels per frame (default: 2)
-- `--gif-multiplier <float>`: GIF animation speed multiplier; 1.0 = normal, 2.0 = 2× faster (default: 1.0)
-- `--api-interval <ms>`: Poll interval for JSON/GIF updates in milliseconds (default: 5000)
+- `--gif-url <url>`: HTTP endpoint returning GIF bytes, for example `/api/art/cover.gif`.
+- `--json-url <url>`: HTTP endpoint returning metadata JSON, for example `/api/info`.
+- `--keys <key1,key2,...>`: JSON fields to show in the scrolling text.
+- `--text-speed <int>`: Text scroll speed in pixels per frame. Default: `2`.
+- `--gif-multiplier <float>`: GIF animation speed multiplier. `1.0` is original speed, `2.0` is twice as fast. Default: `1.0`.
+- `--api-interval <ms>`: Metadata polling interval. Default: `5000`.
+- `--font-path <path>`: BDF font path. Default: `fonts/7x13.bdf`.
+- `--bar-height <px>`: Bottom text bar height. Default: `16`.
+- `--idle-path <path>`: Optional local image/GIF to show when the JSON endpoint returns `null`.
+- `--gif-speed <int>`: Accepted for compatibility, but not used. The GIF fills the canvas and does not spatially scroll.
 
-## API Requirements
+## API Contract
 
-### GIF Endpoint
-
-Should return raw GIF data (binary). Example:
+The GIF endpoint should return raw image bytes:
 
 ```bash
-curl http://192.168.1.100:5000/api/gif > test.gif
+curl http://192.168.1.100:4567/api/art/cover.gif > test.gif
 ```
 
-### JSON Endpoint
-
-Should return JSON with at least an `img` field (unique identifier for the current GIF):
+The JSON endpoint should return an object with an `img` field when something is playing:
 
 ```json
 {
-  "img": "song_123_abc.gif",
-  "song": "Bohemian Rhapsody",
+  "img": "https://i.scdn.co/image/...",
+  "song_name": "Bohemian Rhapsody",
   "artist": "Queen",
   "album": "A Night at the Opera",
-  "year": 1975
+  "year": "1975"
 }
 ```
 
-**Fallback Behavior:**
+The full JSON payload is used as the change token. Any metadata change causes the Pi to download the GIF again and reset animation playback.
 
-- When `img` is `null` or missing → displays `idle.gif`:
+When nothing is playing, return:
+
 ```json
-{
-  "img": null,
-  "song": "N/A"
-}
+null
 ```
 
-- When HTTP request fails (timeout, network error, etc.) → displays `no-signal.gif`
+In that state, the matrix is cleared. If `--idle-path` is set, that local image/GIF is shown instead.
 
-- When GIF download fails → displays `no-signal.gif`
-
-## Example with Flask Backend
-
-```python
-from flask import Flask, send_file
-import requests
-
-app = Flask(__name__)
-
-CURRENT_GIF = "animation.gif"
-METADATA = {
-    "img": "animation_v1.gif",
-    "song": "Track Name",
-    "artist": "Artist Name",
-    "album": "Album Name"
-}
-
-@app.route('/api/gif', methods=['GET'])
-def get_gif():
-    return send_file(CURRENT_GIF, mimetype='image/gif')
-
-@app.route('/api/status', methods=['GET'])
-def get_status():
-    return METADATA
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-```
+If the API request, GIF download, GIF ping, or frame decoding fails, the matrix displays `error` text.
 
 ## Performance Notes
 
-- Frames are pre-cached in memory for smooth playback
-- Double-buffering via `SwapOnVSync()` minimizes flicker
-- API polling runs in a background thread (non-blocking)
-- Content updates happen immediately when GIF changes (frame counter resets)
-- ~60 FPS max refresh rate
+- The program pings image metadata first, then decodes only the frame it needs.
+- It does not load all GIF frames into memory at startup.
+- Rendering uses `SwapOnVSync()` double-buffering.
+- The text bar intentionally overlays the bottom of the GIF.
 
-## Troubleshooting
-
-### Fallback Image Display
-
-- **Seeing `no-signal.gif` (red X on black)**
-  - HTTP request failed → Check network connectivity and API URL
-  - GIF download failed → Verify GIF URL and file format
-  
-- **Seeing `idle.gif`**
-  - JSON returned `null` for `img` key → This is expected idle/standby state
-  - Your backend intentionally paused content
-
-### General Troubleshooting
-
-- **"API JSON fetch failed"**: Check the JSON URL and network connectivity
-- **"img: null, showing no-signal"**: Your API returned `null` for the `img` key (expected behavior)
-- **Text or GIF not scrolling**: Adjust `--gif-speed` and `--text-speed` values
-- **Matrix display issues**: Try `--led-gpio-mapping adafruit-hat` or adjust `--led-slowdown-gpio`
-
-## Customizing Fallback Images
-
-By default, the program generates placeholder images at runtime:
-- `/tmp/no_signal.gif` — Red "X" on black (HTTP failures)
-- `/tmp/idle.gif` — Red "X" on black (JSON returns null)
-
-To use custom images:
-
-```bash
-# Replace idle image with your own
-cp /path/to/your/idle.gif /tmp/idle.gif
-
-# Replace no-signal image with your own
-cp /path/to/your/no_signal.gif /tmp/no_signal.gif
-
-# Then restart the program
-sudo systemctl restart gif-scroller.service
-```
-
-**Image Requirements:**
-- Format: GIF (animated or static)
-- Dimensions: 64×48 pixels (if using 64×64 matrix with 16-pixel text bar)
-- Use only if you want custom fallback appearance; dynamic generation works fine otherwise
-
-## Systemd Service (Optional)
-
-Create `/etc/systemd/system/gif-scroller.service`:
+## Systemd Example
 
 ```ini
 [Unit]
@@ -193,28 +106,13 @@ Type=simple
 User=root
 WorkingDirectory=/home/pi/soundCheck/guest/rpi-rgb-led-matrix-master/utils
 ExecStart=/home/pi/soundCheck/guest/rpi-rgb-led-matrix-master/utils/gif_scroller_api \
-  --gif-url "http://127.0.0.1:5000/api/gif" \
-  --json-url "http://127.0.0.1:5000/api/status" \
-  --keys "song,artist" \
+  --gif-url "http://192.168.1.100:4567/api/art/cover.gif" \
+  --json-url "http://192.168.1.100:4567/api/info" \
+  --keys "song_name,artist,album,year" \
   --api-interval 5000
 Restart=on-failure
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable gif-scroller.service
-sudo systemctl start gif-scroller.service
-sudo systemctl status gif-scroller.service
-```
-
-View logs:
-
-```bash
-sudo journalctl -u gif-scroller.service -f
 ```

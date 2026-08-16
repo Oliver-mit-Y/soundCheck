@@ -4,9 +4,9 @@
 // - Fetches GIF from HTTP API
 // - Fetches JSON with text and image metadata
 // - Configurable JSON keys to display
-// - Dynamic content refresh when "img" key changes
-// - Shows "no-signal.gif" on HTTP failure
-// - Shows "idle.gif" when JSON returns null for "img"
+// - Dynamic content refresh when JSON changes
+// - Shows "error" text on HTTP/GIF failures
+// - Clears the matrix on null JSON, or shows optional idle media
 
 #include "led-matrix.h"
 #include "graphics.h"
@@ -14,11 +14,10 @@
 #include <Magick++.h>
 #include <unistd.h>
 #include <signal.h>
-#include <sys/stat.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <vector>
 #include <string>
-#include <map>
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <cstring>
@@ -59,6 +58,7 @@ struct Config {
   int api_poll_interval_ms;
   std::string font_path;
   int text_bar_height;
+  std::string idle_path;
 } g_config;
 
 // ============= GLOBAL VARIABLES =============
@@ -66,11 +66,11 @@ volatile bool interrupt_received = false;
 std::mutex g_api_mutex;
 enum ApiStatus {
   STATUS_VALID,        // Valid data from API
-  STATUS_HTTP_FAILED,  // HTTP request failed -> show no-signal
-  STATUS_JSON_NULL     // JSON returned null for img -> show idle
+  STATUS_HTTP_FAILED,  // HTTP/API/GIF request failed -> show "error"
+  STATUS_JSON_NULL     // JSON returned null/no img -> blank or idle media
 };
 struct {
-  std::string current_img_key;
+  std::string current_json_key;
   std::string current_text;
   ApiStatus status;
 } g_api_data;
@@ -84,6 +84,12 @@ size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* s) 
   size_t newLength = size * nmemb;
   s->append((char*)contents, newLength);
   return newLength;
+}
+
+std::string JsonValueToString(const json& value) {
+  if (value.is_string()) return value.get<std::string>();
+  if (value.is_null()) return "";
+  return value.dump();
 }
 
 std::string FetchUrl(const std::string& url) {
@@ -120,48 +126,42 @@ void ApiPollerThread() {
     if (json_str.empty()) {
       std::lock_guard<std::mutex> lock(g_api_mutex);
       g_api_data.status = STATUS_HTTP_FAILED;
-      fprintf(stderr, "API JSON fetch failed, showing no-signal\n");
+      fprintf(stderr, "API JSON fetch failed, showing error text\n");
     } else {
       try {
         json j = json::parse(json_str);
-        
+
         std::lock_guard<std::mutex> lock(g_api_mutex);
-        
-        std::string img_key = "unknown";
-        if (j.contains("img")) {
-          auto img_val = j["img"];
-          if (!img_val.is_null()) {
-            img_key = img_val.dump();
-          } else {
-            g_api_data.status = STATUS_JSON_NULL;
-            fprintf(stderr, "API returned 'img': null, showing idle\n");
-            std::this_thread::sleep_for(std::chrono::milliseconds(g_config.api_poll_interval_ms));
-            continue;
-          }
-        }
-        
-        std::string formatted_text;
-        for (size_t i = 0; i < g_config.json_keys.size(); ++i) {
-          const auto& key = g_config.json_keys[i];
-          if (j.contains(key)) {
-            auto val = j[key];
-            formatted_text += key + ": " + val.dump();
-          }
-          if (i < g_config.json_keys.size() - 1) {
-            formatted_text += "; ";
-          }
-        }
-        
-        if (img_key != g_api_data.current_img_key) {
-          g_api_data.current_img_key = img_key;
-          g_api_data.current_text = formatted_text;
-          g_api_data.status = STATUS_VALID;
-          printf("API update: img=%s, text=%s\n", img_key.c_str(), formatted_text.c_str());
+
+        if (j.is_null() || !j.is_object() || !j.contains("img") || j["img"].is_null()) {
+          g_api_data.status = STATUS_JSON_NULL;
+          g_api_data.current_json_key.clear();
+          g_api_data.current_text.clear();
+          fprintf(stderr, "API returned no active image, showing idle\n");
         } else {
-          g_api_data.current_text = formatted_text;
-          g_api_data.status = STATUS_VALID;
+          std::string img_value = JsonValueToString(j["img"]);
+          std::string json_key = j.dump();
+          std::string formatted_text;
+          for (size_t i = 0; i < g_config.json_keys.size(); ++i) {
+            const auto& key = g_config.json_keys[i];
+            if (j.contains(key)) {
+              formatted_text += key + ": " + JsonValueToString(j[key]);
+            }
+            if (i < g_config.json_keys.size() - 1) {
+              formatted_text += "; ";
+            }
+          }
+
+          if (json_key != g_api_data.current_json_key) {
+            g_api_data.current_json_key = json_key;
+            g_api_data.current_text = formatted_text;
+            g_api_data.status = STATUS_VALID;
+            printf("API update: img=%s, text=%s\n", img_value.c_str(), formatted_text.c_str());
+          } else {
+            g_api_data.current_text = formatted_text;
+            g_api_data.status = STATUS_VALID;
+          }
         }
-        
       } catch (json::exception& e) {
         std::lock_guard<std::mutex> lock(g_api_mutex);
         g_api_data.status = STATUS_HTTP_FAILED;
@@ -180,48 +180,66 @@ bool DownloadAndSaveGif(const std::string& url, const std::string& output_file) 
     fprintf(stderr, "Failed to download GIF from %s\n", url.c_str());
     return false;
   }
-  
-  FILE* f = fopen(output_file.c_str(), "wb");
+
+  std::string download_file = output_file + ".download";
+  FILE* f = fopen(download_file.c_str(), "wb");
   if (!f) {
-    fprintf(stderr, "Failed to open file %s for writing\n", output_file.c_str());
+    fprintf(stderr, "Failed to open file %s for writing\n", download_file.c_str());
     return false;
   }
   
   fwrite(data.c_str(), 1, data.size(), f);
   fclose(f);
+
+  if (rename(download_file.c_str(), output_file.c_str()) != 0) {
+    fprintf(stderr, "Failed to replace %s\n", output_file.c_str());
+    remove(download_file.c_str());
+    return false;
+  }
+
   printf("Downloaded GIF to %s (%zu bytes)\n", output_file.c_str(), data.size());
   return true;
 }
 
-// ============= NO-SIGNAL IMAGE =============
-bool CreateNoSignalImage(const std::string& filename, int width, int height) {
-  // Use ImageMagick's convert command to generate a simple image
-  // This avoids Magick++ threading issues
-  std::string cmd = "convert -size " + std::to_string(width) + "x" + std::to_string(height) + 
-                    " xc:black -stroke red -strokewidth 2 " +
-                    "-draw \"line 0,0 " + std::to_string(width) + "," + std::to_string(height) + "\" " +
-                    "-draw \"line " + std::to_string(width) + ",0 0," + std::to_string(height) + "\" " +
-                    "\"" + filename + "\"";
-  int result = system(cmd.c_str());
-  if (result != 0) {
-    fprintf(stderr, "Failed to create no-signal image: %s\n", filename.c_str());
-    return false;
-  }
-  return true;
+// ============= ON-DEMAND GIF HELPERS =============
+std::string IndexedFrameName(const char* filename, int index) {
+  return std::string(filename) + "[" + std::to_string(index) + "]";
 }
 
-// ============= ON-DEMAND GIF HELPERS =============
 bool PingGif(const char* filename, int& out_frame_count, std::vector<int>& out_delays, int& out_width, int& out_height) {
   try {
-    std::vector<Magick::Image> images;
-    Magick::pingImages(&images, filename);
-    if (images.empty()) return false;
-    out_frame_count = static_cast<int>(images.size());
-    out_width = images[0].columns();
-    out_height = images[0].rows();
+    out_frame_count = 0;
+    out_width = 0;
+    out_height = 0;
     out_delays.clear();
-    for (size_t i = 0; i < images.size(); ++i) out_delays.push_back(static_cast<int>(images[i].animationDelay() * 10));
-    return true;
+
+    for (int index = 0; index < 10000; ++index) {
+      Magick::Image img;
+      try {
+        img.ping(IndexedFrameName(filename, index));
+      } catch (Magick::Error&) {
+        if (index == 0) {
+          img.ping(filename);
+          out_frame_count = 1;
+          out_width = static_cast<int>(img.columns());
+          out_height = static_cast<int>(img.rows());
+          int delay = static_cast<int>(img.animationDelay() * 10);
+          out_delays.push_back(delay > 0 ? delay : 100);
+          return true;
+        }
+        break;
+      }
+
+      if (index == 0) {
+        out_width = static_cast<int>(img.columns());
+        out_height = static_cast<int>(img.rows());
+      }
+      int delay = static_cast<int>(img.animationDelay() * 10);
+      out_delays.push_back(delay > 0 ? delay : 100);
+      out_frame_count++;
+    }
+
+    return out_frame_count > 0;
   } catch (Magick::Error& err) {
     fprintf(stderr, "Ping error: %s\n", err.what());
     return false;
@@ -230,19 +248,24 @@ bool PingGif(const char* filename, int& out_frame_count, std::vector<int>& out_d
 
 bool LoadGifFrameAtIndex(const char* filename, int index, int width, int height, int bar_height, std::vector<Color>& out_pixels, int& out_delay_ms) {
   try {
-    std::string fname = std::string(filename) + "[" + std::to_string(index) + "]";
+    (void)bar_height;
+    std::string fname = IndexedFrameName(filename, index);
     Magick::Image img;
-    Magick::readImage(&img, fname);
+    try {
+      img.read(fname);
+    } catch (Magick::Error&) {
+      if (index != 0) throw;
+      img.read(filename);
+    }
     out_delay_ms = static_cast<int>(img.animationDelay() * 10);
+    if (out_delay_ms <= 0) out_delay_ms = 100;
 
-    // scale image to width x (height-bar)
-    int gif_h = std::max(0, height - bar_height);
-    img.scale(Magick::Geometry(width, gif_h));
+    img.scale(Magick::Geometry(width, height));
 
     out_pixels.assign(width * height, Color(0,0,0));
 
     int read_w = std::min(static_cast<int>(img.columns()), width);
-    int read_h = std::min(static_cast<int>(img.rows()), gif_h);
+    int read_h = std::min(static_cast<int>(img.rows()), height);
 
     for (int y = 0; y < read_h; ++y) {
       for (int x = 0; x < read_w; ++x) {
@@ -254,11 +277,6 @@ bool LoadGifFrameAtIndex(const char* filename, int index, int width, int height,
           ScaleQuantumToChar(c.blueQuantum())
         );
       }
-    }
-
-    // clear text bar area
-    for (int y = gif_h; y < height; ++y) {
-      for (int x = 0; x < width; ++x) out_pixels[y * width + x] = Color(0,0,0);
     }
 
     return true;
@@ -315,13 +333,15 @@ void PrintUsage(const char* prog) {
     "  --gif-url <url>              HTTP URL to fetch GIF from\n"
     "  --json-url <url>             HTTP URL to fetch JSON from\n"
     "  --keys <key1,key2,...>       JSON keys to display (comma-separated)\n"
-    "  --gif-speed <int>            GIF scroll speed in pixels/frame (default: 2)\n"
+    "  --gif-speed <int>            Accepted for compatibility; not used\n"
     "  --text-speed <int>           Text scroll speed in pixels/frame (default: 2)\n"
     "  --gif-multiplier <float>     GIF animation speed multiplier (default: 1.0)\n"
     "  --api-interval <ms>          API poll interval in milliseconds (default: 5000)\n",
-     "  --font-path <path>           Font path to use for text bar\n"
-     "  --bar-height <px>            Height of the text bar in pixels (default: 16)\n",
     prog);
+  fprintf(stderr,
+    "  --font-path <path>           Font path to use for text bar\n"
+    "  --bar-height <px>            Height of the text bar in pixels (default: 16)\n"
+    "  --idle-path <path>           Optional local image/GIF to show when JSON is null\n");
 }
 
 bool ParseArguments(int argc, char* argv[]) {
@@ -336,8 +356,11 @@ bool ParseArguments(int argc, char* argv[]) {
       std::string key;
       while (std::getline(ss, key, ',')) {
         key.erase(0, key.find_first_not_of(" \t"));
-        key.erase(key.find_last_not_of(" \t") + 1);
-        g_config.json_keys.push_back(key);
+        size_t end = key.find_last_not_of(" \t");
+        if (end != std::string::npos) {
+          key.erase(end + 1);
+          g_config.json_keys.push_back(key);
+        }
       }
     } else if (strcmp(argv[i], "--gif-speed") == 0 && i + 1 < argc) {
       g_config.gif_scroll_speed = atoi(argv[++i]);
@@ -351,6 +374,8 @@ bool ParseArguments(int argc, char* argv[]) {
         g_config.font_path = argv[++i];
       } else if (strcmp(argv[i], "--bar-height") == 0 && i + 1 < argc) {
         g_config.text_bar_height = atoi(argv[++i]);
+      } else if (strcmp(argv[i], "--idle-path") == 0 && i + 1 < argc) {
+        g_config.idle_path = argv[++i];
     } else {
       PrintUsage(argv[0]);
       return false;
@@ -372,6 +397,7 @@ bool ParseArguments(int argc, char* argv[]) {
   }
   printf("\n  gif_speed=%d, text_speed=%d\n", g_config.gif_scroll_speed, g_config.text_scroll_speed);
     printf("  font_path=%s, bar_height=%d\n", g_config.font_path.c_str(), g_config.text_bar_height);
+  if (!g_config.idle_path.empty()) printf("  idle_path=%s\n", g_config.idle_path.c_str());
   printf("  api_interval=%dms\n", g_config.api_poll_interval_ms);
   
   return true;
@@ -416,37 +442,17 @@ int main(int argc, char* argv[]) {
   signal(SIGINT, InterruptHandler);
   
   const char* temp_gif = "/tmp/dynamic.gif";
-  const char* no_signal_gif = "/tmp/no_signal.gif";
-  const char* idle_gif = "/tmp/idle.gif";
-  
-  printf("Creating no-signal and idle images...\n");
-  CreateNoSignalImage(no_signal_gif, MATRIX_COLS, MATRIX_ROWS - g_config.text_bar_height);
-  CreateNoSignalImage(idle_gif, MATRIX_COLS, MATRIX_ROWS - g_config.text_bar_height);  // User can replace with idle.* file
   
   printf("Starting API poller thread...\n");
   std::thread api_thread(ApiPollerThread);
   api_thread.detach();
   
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-  
-  if (!DownloadAndSaveGif(g_config.api_gif_url, temp_gif)) {
-    printf("Failed to download initial GIF, using no-signal\n");
-    system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
-  }
 
   int frame_count = 0;
   std::vector<int> frame_delays;
   int gif_w = 0, gif_h = 0;
-  if (!PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
-    // fallback to no_signal
-    printf("Ping failed for downloaded GIF, using no-signal\n");
-    system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
-    if (!PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
-      fprintf(stderr, "Failed to ping fallback no-signal GIF\n");
-      delete matrix;
-      return 1;
-    }
-  }
+  std::string media_path;
   
   printf("Loading font: %s...\n", g_config.font_path.c_str());
   Font font;
@@ -464,104 +470,124 @@ int main(int argc, char* argv[]) {
   int frame_index = 0;
   struct timespec last_frame_time;
   clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
-  std::string current_img_key;
+  std::string current_json_key;
   ApiStatus last_status = STATUS_HTTP_FAILED;
 
   // on-demand frame buffer
   std::vector<Color> current_pixels;
-  int current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
-  struct stat gif_stat;
-  time_t last_mtime = 0;
-  if (stat(temp_gif, &gif_stat) == 0) last_mtime = gif_stat.st_mtime;
+  int current_frame_delay = 100;
   
   while (!interrupt_received) {
+    ApiStatus api_status;
+    std::string api_json_key;
     {
       std::lock_guard<std::mutex> lock(g_api_mutex);
-      
-      // Check if status changed or img_key changed
-      bool status_changed = (g_api_data.status != last_status);
-      bool img_changed = (g_api_data.status == STATUS_VALID && g_api_data.current_img_key != current_img_key);
-      
-      if (status_changed || img_changed) {
-        last_status = g_api_data.status;
-        current_img_key = g_api_data.current_img_key;
-        // Reset on-demand buffers
-        current_pixels.clear();
-        frame_index = 0;
-        text_x = MATRIX_COLS;
-
-        if (g_api_data.status == STATUS_VALID) {
-          printf("Valid data, downloading GIF...\n");
-          if (DownloadAndSaveGif(g_config.api_gif_url, temp_gif)) {
-            if (!PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
-              fprintf(stderr, "Ping failed after download, using no-signal\n");
-              system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
-              PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
-            }
-          } else {
-            printf("Failed to download GIF, showing no-signal\n");
-            system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
-            PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
-          }
-          current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
-          clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
-        } else if (g_api_data.status == STATUS_JSON_NULL) {
-          printf("JSON returned null, showing idle\n");
-          system((std::string("cp ") + idle_gif + " " + temp_gif).c_str());
-          PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
-          current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
-        } else {
-          printf("HTTP failed, showing no-signal\n");
-          system((std::string("cp ") + no_signal_gif + " " + temp_gif).c_str());
-          PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h);
-          current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
-        }
-      }
+      api_status = g_api_data.status;
+      api_json_key = g_api_data.current_json_key;
     }
-    
-    if (frame_count <= 0) {
-      usleep(100000);
+
+    bool status_changed = (api_status != last_status);
+    bool json_changed = (api_status == STATUS_VALID && api_json_key != current_json_key);
+
+    if (status_changed || json_changed) {
+      last_status = api_status;
+      current_json_key = api_json_key;
+      current_pixels.clear();
+      frame_index = 0;
+      text_x = MATRIX_COLS;
+      frame_count = 0;
+      frame_delays.clear();
+      media_path.clear();
+
+      if (api_status == STATUS_VALID) {
+        printf("Valid data, downloading GIF...\n");
+        if (DownloadAndSaveGif(g_config.api_gif_url, temp_gif) &&
+            PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
+          media_path = temp_gif;
+        } else {
+          std::lock_guard<std::mutex> lock(g_api_mutex);
+          g_api_data.status = STATUS_HTTP_FAILED;
+          last_status = STATUS_HTTP_FAILED;
+          fprintf(stderr, "GIF download or ping failed\n");
+        }
+      } else if (api_status == STATUS_JSON_NULL && !g_config.idle_path.empty()) {
+        printf("JSON returned null, showing idle media: %s\n", g_config.idle_path.c_str());
+        if (PingGif(g_config.idle_path.c_str(), frame_count, frame_delays, gif_w, gif_h)) {
+          media_path = g_config.idle_path;
+        } else {
+          fprintf(stderr, "Idle media could not be loaded: %s\n", g_config.idle_path.c_str());
+        }
+      } else if (api_status == STATUS_JSON_NULL) {
+        printf("JSON returned null, clearing matrix\n");
+      } else {
+        printf("API failed, showing error text\n");
+      }
+
+      current_frame_delay = (frame_delays.empty() ? 100 : frame_delays[0]);
+      clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
+    }
+
+    offscreen->Clear();
+
+    if (last_status == STATUS_JSON_NULL && g_config.idle_path.empty()) {
+      offscreen = matrix->SwapOnVSync(offscreen);
+      usleep(16000);
       continue;
     }
 
-    // Load current frame on-demand if not loaded
-    if (current_pixels.empty()) {
-      if (!LoadGifFrameAtIndex(temp_gif, frame_index, MATRIX_COLS, MATRIX_ROWS, g_config.text_bar_height, current_pixels, current_frame_delay)) {
-        // failed to load frame -> skip drawing GIF this iteration
+    {
+      if (frame_count > 0 && current_pixels.empty()) {
+        if (!LoadGifFrameAtIndex(media_path.c_str(), frame_index, MATRIX_COLS, MATRIX_ROWS, g_config.text_bar_height, current_pixels, current_frame_delay)) {
+          std::lock_guard<std::mutex> lock(g_api_mutex);
+          g_api_data.status = STATUS_HTTP_FAILED;
+          last_status = STATUS_HTTP_FAILED;
+          current_pixels.clear();
+          frame_count = 0;
+          fprintf(stderr, "Frame load failed\n");
+        }
       }
     }
 
     if (!current_pixels.empty()) CopyPixelsToCanvas(current_pixels, offscreen, MATRIX_COLS, MATRIX_ROWS);
-    
-    std::string display_text = "Loading...";
+
+    std::string display_text;
+    bool draw_text_bar = false;
     {
       std::lock_guard<std::mutex> lock(g_api_mutex);
       if (g_api_data.status == STATUS_VALID) {
         display_text = g_api_data.current_text;
+        draw_text_bar = !display_text.empty();
+      } else if (g_api_data.status == STATUS_HTTP_FAILED) {
+        display_text = "error";
+        draw_text_bar = true;
       }
     }
-    
-    DrawTextBar(offscreen, 
-          MATRIX_COLS, 
-          MATRIX_ROWS, 
-          g_config.text_bar_height,
-          TEXT_BAR_COLOR,
-          font,
-          display_text.c_str(),
-          text_x,
-          TEXT_COLOR);
+
+    if (draw_text_bar) {
+      DrawTextBar(offscreen,
+            MATRIX_COLS,
+            MATRIX_ROWS,
+            g_config.text_bar_height,
+            TEXT_BAR_COLOR,
+            font,
+            display_text.c_str(),
+            text_x,
+            TEXT_COLOR);
+    }
     
     offscreen = matrix->SwapOnVSync(offscreen);
     
-    text_x -= g_config.text_scroll_speed;
-    
-    int approx_text_width = 0;
-    for (const char* p = display_text.c_str(); *p; ++p) {
-      approx_text_width += font.CharacterWidth(*p);
-    }
-    
-    if (text_x < -approx_text_width - 20) {
-      text_x = MATRIX_COLS;
+    if (draw_text_bar) {
+      text_x -= g_config.text_scroll_speed;
+
+      int approx_text_width = 0;
+      for (const char* p = display_text.c_str(); *p; ++p) {
+        approx_text_width += font.CharacterWidth(*p);
+      }
+
+      if (text_x < -approx_text_width - 20) {
+        text_x = MATRIX_COLS;
+      }
     }
     
     struct timespec current_time;
@@ -570,10 +596,11 @@ int main(int argc, char* argv[]) {
     float elapsed_ms = (current_time.tv_sec - last_frame_time.tv_sec) * 1000.0f +
                        (current_time.tv_nsec - last_frame_time.tv_nsec) / 1000000.0f;
     
-    float frame_delay = current_frame_delay / g_config.gif_speed_multiplier;
+    float speed_multiplier = std::max(0.1f, g_config.gif_speed_multiplier);
+    float frame_delay = current_frame_delay / speed_multiplier;
 
-    if (elapsed_ms >= frame_delay) {
-      frame_index = (frame_index + 1) % std::max(1, frame_count);
+    if (frame_count > 0 && elapsed_ms >= frame_delay) {
+      frame_index = (frame_index + 1) % frame_count;
       current_pixels.clear();
       if (!frame_delays.empty()) current_frame_delay = frame_delays[frame_index];
       clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
