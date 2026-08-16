@@ -31,6 +31,29 @@ docker compose up --build
 
 The compose file uses `network_mode: host` and `privileged: true` so the process can access GPIO and call the host/API endpoints with minimal overhead. Edit `guest/docker-compose.yml` to change `LED_ARGS`, `JSON_URL`, `GIF_URL`, keys, font, or idle image.
 
+## Systemd Service
+
+The service runs as root so it can access the GPIO header. Build the binary first, then install the unit:
+
+```sh
+cd /home/zero/soundcheck/guest/rpi-rgb-led-matrix-master/utils
+make -f Makefile.gif_api
+
+sudo cp /home/zero/soundcheck/guest/soundcheck-guest.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable soundcheck-guest.service
+sudo systemctl start soundcheck-guest.service
+```
+
+Check status and logs:
+
+```sh
+sudo systemctl status soundcheck-guest.service
+sudo journalctl -u soundcheck-guest.service -f
+```
+
+Edit `/home/zero/soundcheck/guest/soundcheck-guest.service` before copying it if your panel flags, API URLs, font, idle image, or project path differ.
+
 ## Run
 
 ```sh
