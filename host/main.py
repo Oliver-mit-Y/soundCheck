@@ -98,7 +98,7 @@ def main():
     sp = spotipy_setup()
     last_img = ''
     while True:
-        time.sleep(5)
+        time.sleep(2)
         # try:
         info = sp.current_playback()
         if info and info.get("is_playing"):
