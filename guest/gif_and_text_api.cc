@@ -82,10 +82,17 @@ struct Animation {
   int height;
 };
 
+enum SignalStatus {
+  SIGNAL_NORMAL = 0,
+  SIGNAL_ERROR = 1,
+  SIGNAL_LOADING = 2
+};
+
 struct SharedState {
   std::mutex mutex;
   std::shared_ptr<Animation> animation;
   std::string text = "error";
+  SignalStatus signal_status = SIGNAL_ERROR;
   uint64_t generation = 0;
 };
 
@@ -471,6 +478,7 @@ static void PollApis(const Config config, SharedState *state,
     if (!FetchUrl(config.json_url, &json, &err)) {
       std::lock_guard<std::mutex> lock(state->mutex);
       state->text = "error";
+      state->signal_status = SIGNAL_ERROR;
       ++state->generation;
       fprintf(stderr, "JSON fetch failed: %s\n", err.c_str());
     } else if (json != last_json) {
@@ -483,6 +491,11 @@ static void PollApis(const Config config, SharedState *state,
         if (!config.idle_image.empty() && !showing_idle) {
           fprintf(stderr, "[idle] loading idle image: %s\n",
                   config.idle_image.c_str());
+          {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->signal_status = SIGNAL_LOADING;
+            ++state->generation;
+          }
           if (LoadImageFile(config.idle_image, width, height,
                             config.gif_delay_override_ms, &idle_animation,
                             &err)) {
@@ -494,6 +507,7 @@ static void PollApis(const Config config, SharedState *state,
         {
           std::lock_guard<std::mutex> lock(state->mutex);
           state->text = idle_ok ? "" : "error";
+          state->signal_status = idle_ok ? SIGNAL_NORMAL : SIGNAL_ERROR;
           if (idle_animation) {
             state->animation = idle_animation;
             showing_idle = true;
@@ -513,12 +527,18 @@ static void PollApis(const Config config, SharedState *state,
         const std::string text = BuildScrollText(json, config.keys);
         fprintf(stderr, "[poll] fetching GIF/image: %s\n",
                 config.gif_url.c_str());
+        {
+          std::lock_guard<std::mutex> lock(state->mutex);
+          state->signal_status = SIGNAL_LOADING;
+          ++state->generation;
+        }
         if (FetchUrl(config.gif_url, &gif_data, &err) &&
             LoadImageData(gif_data, width, height, config.gif_delay_override_ms,
                           &new_animation, &err)) {
           std::lock_guard<std::mutex> lock(state->mutex);
           state->text = text;
           state->animation = new_animation;
+          state->signal_status = text == "error" ? SIGNAL_ERROR : SIGNAL_NORMAL;
           ++state->generation;
           showing_idle = false;
           last_json = json;
@@ -528,6 +548,7 @@ static void PollApis(const Config config, SharedState *state,
         } else {
           std::lock_guard<std::mutex> lock(state->mutex);
           state->text = "error";
+          state->signal_status = SIGNAL_ERROR;
           ++state->generation;
           fprintf(stderr, "GIF update failed: %s\n", err.c_str());
         }
@@ -669,6 +690,7 @@ int main(int argc, char *argv[]) {
   int text_x = scroll_direction < 0 ? matrix->width() : 0;
   int text_length = 0;
   std::string current_text = "error";
+  SignalStatus current_signal_status = SIGNAL_ERROR;
   std::shared_ptr<Animation> current_animation;
   uint64_t current_generation = 0;
   size_t frame_index = 0;
@@ -682,14 +704,21 @@ int main(int argc, char *argv[]) {
     {
       std::lock_guard<std::mutex> lock(state.mutex);
       if (state.generation != current_generation) {
+        const bool animation_changed = state.animation != current_animation;
         current_generation = state.generation;
         current_animation = state.animation;
         current_text = state.text;
+        current_signal_status = state.signal_status;
         text_x = scroll_direction < 0 ? matrix->width() : 0;
-        frame_index = 0;
-        next_gif_frame_ms = 0;
+        if (animation_changed) {
+          frame_index = 0;
+          next_gif_frame_ms = 0;
+        }
       }
     }
+
+    const bool draw_text_bar =
+      !current_text.empty() && current_text != "error";
 
     if (current_animation && !current_animation->frames.empty()) {
       const tmillis_t now = GetTimeInMillis();
@@ -701,16 +730,16 @@ int main(int argc, char *argv[]) {
       }
       RenderFrame(offscreen, *current_animation, frame_index, bar_y,
                   config.text_bar_height, config.bar_color,
-                  !current_text.empty());
+                  draw_text_bar);
     } else {
       offscreen->Fill(0, 0, 0);
-      if (!current_text.empty()) {
+      if (draw_text_bar) {
         FillRect(offscreen, 0, bar_y, matrix->width(), matrix->height(),
                  config.bar_color);
       }
     }
 
-    if (!current_text.empty()) {
+    if (draw_text_bar) {
       text_length = rgb_matrix::DrawText(offscreen, font, text_x,
                                          text_y + font.baseline(),
                                          config.text_color, NULL,
@@ -721,6 +750,12 @@ int main(int argc, char *argv[]) {
           (scroll_direction > 0 && text_x > matrix->width())) {
         text_x = scroll_direction < 0 ? matrix->width() : -text_length;
       }
+    }
+
+    if (current_signal_status == SIGNAL_LOADING) {
+      offscreen->SetPixel(matrix->width() - 1, 0, 0, 0, 255);
+    } else if (current_signal_status == SIGNAL_ERROR) {
+      offscreen->SetPixel(matrix->width() - 1, 0, 255, 0, 0);
     }
 
     if (abs_speed > 0) {
