@@ -17,6 +17,20 @@ cd guest/rpi-rgb-led-matrix-master/utils
 make -f Makefile.gif_api
 ```
 
+## Docker Runtime
+
+The guest container is runtime-only; compile the binary on the Raspberry Pi first, then build/start the container:
+
+```sh
+cd guest/rpi-rgb-led-matrix-master/utils
+make -f Makefile.gif_api
+
+cd ../..
+docker compose up --build
+```
+
+The compose file uses `network_mode: host` and `privileged: true` so the process can access GPIO and call the host/API endpoints with minimal overhead. Edit `guest/docker-compose.yml` to change `LED_ARGS`, `JSON_URL`, `GIF_URL`, keys, font, or idle image.
+
 ## Run
 
 ```sh

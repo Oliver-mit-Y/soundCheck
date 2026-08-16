@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!docker-compose.yml
+!idle-small.gif
+!rpi-rgb-led-matrix-master/fonts/**
+!rpi-rgb-led-matrix-master/utils/gif-and-text-api

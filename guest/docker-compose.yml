@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  guest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: soundcheck_guest
+    restart: unless-stopped
+
+    # GPIO access with the least runtime overhead. Host networking also lets
+    # the container call localhost services exactly like the host process.
+    privileged: true
+    network_mode: host
+
+    environment:
+      JSON_URL: "http://192.168.178:4567/api/info"
+      GIF_URL: "http://192.168.178:4567/api/art/cover.gif"
+      KEYS: "song,artist,album,year"
+      FONT: "/app/fonts/font.bdf"
+      IDLE_IMAGE: "/app/idle-small.gif"
+      LED_ARGS: "--led-rows=64 --led-cols=64 --led-chain=1 --led-slowdown-gpio=2 --led-brightness=80 --led-gpio-mapping=adafruit-hat-pwm"
+      EXTRA_ARGS: "--text-bar-height=8 --scroll-speed=2 --gif-speed=900 --poll-ms=3000"
+
+    command:
+      - /bin/sh
+      - -lc
+      - >
+        exec /usr/local/bin/gif-and-text-api
+        $LED_ARGS
+        --json-url="$JSON_URL"
+        --gif-url="$GIF_URL"
+        --keys="$KEYS"
+        --font="$FONT"
+        --idle-image="$IDLE_IMAGE"
+        $EXTRA_ARGS
