@@ -104,6 +104,24 @@ struct Config {
   Color bar_color = Color(0, 0, 0);
 };
 
+static std::string Preview(const std::string &value, size_t max_len) {
+  std::string out = value.substr(0, std::min(max_len, value.size()));
+  for (size_t i = 0; i < out.size(); ++i) {
+    if (out[i] == '\n' || out[i] == '\r' || out[i] == '\t') out[i] = ' ';
+  }
+  if (value.size() > max_len) out.append("...");
+  return out;
+}
+
+static std::string JoinKeys(const std::vector<std::string> &keys) {
+  std::string out;
+  for (size_t i = 0; i < keys.size(); ++i) {
+    if (i > 0) out.append(",");
+    out.append(keys[i]);
+  }
+  return out;
+}
+
 static size_t CurlWriteCallback(void *contents, size_t size, size_t nmemb,
                                 void *userp) {
   const size_t total = size * nmemb;
@@ -144,6 +162,8 @@ static bool FetchUrl(const std::string &url, std::string *body,
     *err = buffer;
     return false;
   }
+  fprintf(stderr, "[fetch] ok url=%s http=%ld bytes=%zu\n",
+          url.c_str(), response_code, body->size());
   return true;
 }
 
@@ -284,16 +304,25 @@ static bool ExtractFlatJsonValues(const std::string &json,
 static std::string BuildScrollText(const std::string &json,
                                    const std::vector<std::string> &keys) {
   std::map<std::string, std::string> values;
-  if (!ExtractFlatJsonValues(json, &values)) return "error";
+  if (!ExtractFlatJsonValues(json, &values)) {
+    fprintf(stderr, "[json] parse failed body='%s'\n",
+            Preview(json, 180).c_str());
+    return "error";
+  }
 
   std::string out;
   for (size_t i = 0; i < keys.size(); ++i) {
     const std::map<std::string, std::string>::const_iterator it =
       values.find(keys[i]);
-    if (it == values.end()) continue;
+    if (it == values.end()) {
+      fprintf(stderr, "[json] key missing: %s\n", keys[i].c_str());
+      continue;
+    }
     if (!out.empty()) out.append(", ");
     out.append(keys[i]).append(":").append(it->second);
   }
+  fprintf(stderr, "[json] extracted text='%s'\n",
+          Preview(out, 180).c_str());
   return out.empty() ? "error" : out;
 }
 
@@ -319,6 +348,8 @@ static bool LoadImageData(const std::string &data, int target_width,
     *err = "no image frames";
     return false;
   }
+  fprintf(stderr, "[image] decoded API image frames=%zu target=%dx%d\n",
+          frames.size(), target_width, target_height);
 
   std::shared_ptr<Animation> result(new Animation());
   result->width = target_width;
@@ -374,6 +405,8 @@ static bool LoadImageFile(const std::string &path, int target_width,
     *err = "no image frames";
     return false;
   }
+  fprintf(stderr, "[image] decoded idle image path=%s frames=%zu target=%dx%d\n",
+          path.c_str(), frames.size(), target_width, target_height);
 
   std::shared_ptr<Animation> result(new Animation());
   result->width = target_width;
@@ -426,19 +459,28 @@ static void PollApis(const Config config, SharedState *state,
                      int width, int height) {
   std::string last_json;
   bool showing_idle = false;
+  fprintf(stderr, "[poll] starting json_url=%s gif_url=%s poll_ms=%d keys=%s\n",
+          config.json_url.c_str(), config.gif_url.c_str(), config.poll_ms,
+          JoinKeys(config.keys).c_str());
   while (!interrupt_received) {
     std::string json;
     std::string err;
+    fprintf(stderr, "[poll] fetching JSON: %s\n", config.json_url.c_str());
     if (!FetchUrl(config.json_url, &json, &err)) {
       std::lock_guard<std::mutex> lock(state->mutex);
       state->text = "error";
       ++state->generation;
       fprintf(stderr, "JSON fetch failed: %s\n", err.c_str());
     } else if (json != last_json) {
+      fprintf(stderr, "[poll] JSON changed bytes=%zu preview='%s'\n",
+              json.size(), Preview(json, 180).c_str());
       if (JsonIsNull(json)) {
+        fprintf(stderr, "[poll] JSON is null; using idle mode\n");
         bool idle_ok = config.idle_image.empty() || showing_idle;
         std::shared_ptr<Animation> idle_animation;
         if (!config.idle_image.empty() && !showing_idle) {
+          fprintf(stderr, "[idle] loading idle image: %s\n",
+                  config.idle_image.c_str());
           if (LoadImageFile(config.idle_image, width, height,
                             config.gif_delay_override_ms, &idle_animation,
                             &err)) {
@@ -459,11 +501,16 @@ static void PollApis(const Config config, SharedState *state,
           }
           ++state->generation;
         }
+        fprintf(stderr, "[state] idle applied ok=%s generation=%llu\n",
+                idle_ok ? "yes" : "no",
+                (unsigned long long)state->generation);
         if (idle_ok) last_json = json;
       } else {
         std::shared_ptr<Animation> new_animation;
         std::string gif_data;
         const std::string text = BuildScrollText(json, config.keys);
+        fprintf(stderr, "[poll] fetching GIF/image: %s\n",
+                config.gif_url.c_str());
         if (FetchUrl(config.gif_url, &gif_data, &err) &&
             LoadImageData(gif_data, width, height, config.gif_delay_override_ms,
                           &new_animation, &err)) {
@@ -473,6 +520,9 @@ static void PollApis(const Config config, SharedState *state,
           ++state->generation;
           showing_idle = false;
           last_json = json;
+          fprintf(stderr, "[state] active applied frames=%zu text='%s' generation=%llu\n",
+                  new_animation->frames.size(), Preview(text, 120).c_str(),
+                  (unsigned long long)state->generation);
         } else {
           std::lock_guard<std::mutex> lock(state->mutex);
           state->text = "error";
@@ -480,6 +530,8 @@ static void PollApis(const Config config, SharedState *state,
           fprintf(stderr, "GIF update failed: %s\n", err.c_str());
         }
       }
+    } else {
+      fprintf(stderr, "[poll] JSON unchanged\n");
     }
 
     const tmillis_t end = GetTimeInMillis() + config.poll_ms;
@@ -593,6 +645,15 @@ int main(int argc, char *argv[]) {
   SharedState state;
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
+
+  fprintf(stderr,
+          "[config] json_url=%s gif_url=%s idle_image=%s font=%s keys=%s "
+          "bar_height=%d scroll_speed=%.2f gif_speed=%d poll_ms=%d\n",
+          config.json_url.c_str(), config.gif_url.c_str(),
+          config.idle_image.empty() ? "(none)" : config.idle_image.c_str(),
+          config.font_file.c_str(), JoinKeys(config.keys).c_str(),
+          config.text_bar_height, config.scroll_speed,
+          config.gif_delay_override_ms, config.poll_ms);
 
   std::thread poller(PollApis, config, &state, matrix->width(), matrix->height());
 
