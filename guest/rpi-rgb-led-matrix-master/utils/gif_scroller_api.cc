@@ -36,7 +36,7 @@ using rgb_matrix::DrawText;
 using json = nlohmann::json;
 
 // ============= GLOBAL CONFIG =============
-const char* FONT_PATH = "fonts/7x13.bdf";
+const char* FONT_PATH = "../fonts/7x13.bdf";
 
 const int MATRIX_ROWS = 64;
 const int MATRIX_COLS = 64;
@@ -92,18 +92,17 @@ std::string JsonValueToString(const json& value) {
   return value.dump();
 }
 
-std::string FetchUrl(const std::string& url) {
+bool FetchUrl(const std::string& url, std::string* response) {
   CURL* curl = curl_easy_init();
-  std::string response;
   
   if (!curl) {
     fprintf(stderr, "curl_easy_init failed\n");
-    return "";
+    return false;
   }
   
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   
@@ -111,19 +110,27 @@ std::string FetchUrl(const std::string& url) {
   if (res != CURLE_OK) {
     fprintf(stderr, "curl_easy_perform failed: %s\n", curl_easy_strerror(res));
     curl_easy_cleanup(curl);
-    return "";
+    return false;
+  }
+
+  long http_code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+  if (http_code >= 400) {
+    fprintf(stderr, "HTTP %ld from %s\n", http_code, url.c_str());
+    curl_easy_cleanup(curl);
+    return false;
   }
   
   curl_easy_cleanup(curl);
-  return response;
+  return true;
 }
 
 // ============= API THREAD =============
 void ApiPollerThread() {
   while (!interrupt_received) {
-    std::string json_str = FetchUrl(g_config.api_json_url);
+    std::string json_str;
     
-    if (json_str.empty()) {
+    if (!FetchUrl(g_config.api_json_url, &json_str) || json_str.empty()) {
       std::lock_guard<std::mutex> lock(g_api_mutex);
       g_api_data.status = STATUS_HTTP_FAILED;
       fprintf(stderr, "API JSON fetch failed, showing error text\n");
@@ -133,11 +140,14 @@ void ApiPollerThread() {
 
         std::lock_guard<std::mutex> lock(g_api_mutex);
 
-        if (j.is_null() || !j.is_object() || !j.contains("img") || j["img"].is_null()) {
+        if (j.is_null() || (j.is_object() && j.contains("img") && j["img"].is_null())) {
           g_api_data.status = STATUS_JSON_NULL;
           g_api_data.current_json_key.clear();
           g_api_data.current_text.clear();
           fprintf(stderr, "API returned no active image, showing idle\n");
+        } else if (!j.is_object() || !j.contains("img")) {
+          g_api_data.status = STATUS_HTTP_FAILED;
+          fprintf(stderr, "JSON response is missing required 'img' key\n");
         } else {
           std::string img_value = JsonValueToString(j["img"]);
           std::string json_key = j.dump();
@@ -175,8 +185,8 @@ void ApiPollerThread() {
 
 // ============= GIF HELPER =============
 bool DownloadAndSaveGif(const std::string& url, const std::string& output_file) {
-  std::string data = FetchUrl(url);
-  if (data.empty()) {
+  std::string data;
+  if (!FetchUrl(url, &data) || data.empty()) {
     fprintf(stderr, "Failed to download GIF from %s\n", url.c_str());
     return false;
   }
@@ -341,17 +351,34 @@ void PrintUsage(const char* prog) {
   fprintf(stderr,
     "  --font-path <path>           Font path to use for text bar\n"
     "  --bar-height <px>            Height of the text bar in pixels (default: 16)\n"
-    "  --idle-path <path>           Optional local image/GIF to show when JSON is null\n");
+    "  --idle-path <path>           Optional local image/GIF to show when JSON is null\n"
+    "\n"
+    "RGB matrix options such as --led-rows, --led-cols, --led-chain,\n"
+    "--led-gpio-mapping, and --led-slowdown-gpio are passed through.\n");
 }
 
-bool ParseArguments(int argc, char* argv[]) {
-  for (int i = 1; i < argc; ++i) {
-    if (strcmp(argv[i], "--gif-url") == 0 && i + 1 < argc) {
-      g_config.api_gif_url = argv[++i];
-    } else if (strcmp(argv[i], "--json-url") == 0 && i + 1 < argc) {
-      g_config.api_json_url = argv[++i];
-    } else if (strcmp(argv[i], "--keys") == 0 && i + 1 < argc) {
-      std::string keys_str = argv[++i];
+bool ParseArguments(int* argc, char*** argv) {
+  int dst = 1;
+  for (int i = 1; i < *argc; ++i) {
+    char** args = *argv;
+    if (strcmp(args[i], "--gif-url") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.api_gif_url = args[++i];
+    } else if (strcmp(args[i], "--json-url") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.api_json_url = args[++i];
+    } else if (strcmp(args[i], "--keys") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      std::string keys_str = args[++i];
       std::stringstream ss(keys_str);
       std::string key;
       while (std::getline(ss, key, ',')) {
@@ -362,29 +389,60 @@ bool ParseArguments(int argc, char* argv[]) {
           g_config.json_keys.push_back(key);
         }
       }
-    } else if (strcmp(argv[i], "--gif-speed") == 0 && i + 1 < argc) {
-      g_config.gif_scroll_speed = atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--text-speed") == 0 && i + 1 < argc) {
-      g_config.text_scroll_speed = atoi(argv[++i]);
-    } else if (strcmp(argv[i], "--gif-multiplier") == 0 && i + 1 < argc) {
-      g_config.gif_speed_multiplier = atof(argv[++i]);
-    } else if (strcmp(argv[i], "--api-interval") == 0 && i + 1 < argc) {
-      g_config.api_poll_interval_ms = atoi(argv[++i]);
-      } else if (strcmp(argv[i], "--font-path") == 0 && i + 1 < argc) {
-        g_config.font_path = argv[++i];
-      } else if (strcmp(argv[i], "--bar-height") == 0 && i + 1 < argc) {
-        g_config.text_bar_height = atoi(argv[++i]);
-      } else if (strcmp(argv[i], "--idle-path") == 0 && i + 1 < argc) {
-        g_config.idle_path = argv[++i];
-    } else {
-      PrintUsage(argv[0]);
+    } else if (strcmp(args[i], "--gif-speed") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.gif_scroll_speed = atoi(args[++i]);
+    } else if (strcmp(args[i], "--text-speed") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.text_scroll_speed = atoi(args[++i]);
+    } else if (strcmp(args[i], "--gif-multiplier") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.gif_speed_multiplier = atof(args[++i]);
+    } else if (strcmp(args[i], "--api-interval") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.api_poll_interval_ms = atoi(args[++i]);
+    } else if (strcmp(args[i], "--font-path") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.font_path = args[++i];
+    } else if (strcmp(args[i], "--bar-height") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.text_bar_height = atoi(args[++i]);
+    } else if (strcmp(args[i], "--idle-path") == 0) {
+      if (i + 1 >= *argc) {
+        PrintUsage(args[0]);
+        return false;
+      }
+      g_config.idle_path = args[++i];
+    } else if (strcmp(args[i], "--help") == 0 || strcmp(args[i], "-h") == 0) {
+      PrintUsage(args[0]);
       return false;
+    } else {
+      args[dst++] = args[i];
     }
   }
+  *argc = dst;
   
   if (g_config.api_gif_url.empty() || g_config.api_json_url.empty() || g_config.json_keys.empty()) {
     fprintf(stderr, "\nError: --gif-url, --json-url, and --keys are required\n\n");
-    PrintUsage(argv[0]);
+    PrintUsage((*argv)[0]);
     return false;
   }
   
@@ -415,7 +473,7 @@ int main(int argc, char* argv[]) {
   g_config.text_bar_height = TEXT_BAR_HEIGHT;
   g_api_data.status = STATUS_HTTP_FAILED;
   
-  if (!ParseArguments(argc, argv)) {
+  if (!ParseArguments(&argc, &argv)) {
     return 1;
   }
   
@@ -431,12 +489,24 @@ int main(int argc, char* argv[]) {
 
   rgb_matrix::RuntimeOptions runtime_opt;
   runtime_opt.gpio_slowdown = 2;
+  runtime_opt.drop_priv_user = getenv("SUDO_UID");
+  runtime_opt.drop_priv_group = getenv("SUDO_GID");
+
+  if (!rgb_matrix::ParseOptionsFromFlags(&argc, &argv, &matrix_options, &runtime_opt)) {
+    PrintUsage(argv[0]);
+    return 1;
+  }
   
   RGBMatrix* matrix = RGBMatrix::CreateFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL) {
     fprintf(stderr, "Error: Matrix could not be created\n");
     return 1;
   }
+
+  const int matrix_width = matrix->width();
+  const int matrix_height = matrix->height();
+  printf("Matrix ready: %dx%d, mapping=%s\n",
+         matrix_width, matrix_height, matrix_options.hardware_mapping);
   
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
@@ -466,7 +536,7 @@ int main(int argc, char* argv[]) {
   
   printf("Starting animation...\n");
   
-  int text_x = MATRIX_COLS;
+  int text_x = 0;
   int frame_index = 0;
   struct timespec last_frame_time;
   clock_gettime(CLOCK_MONOTONIC, &last_frame_time);
@@ -494,12 +564,13 @@ int main(int argc, char* argv[]) {
       current_json_key = api_json_key;
       current_pixels.clear();
       frame_index = 0;
-      text_x = MATRIX_COLS;
+      text_x = matrix_width;
       frame_count = 0;
       frame_delays.clear();
       media_path.clear();
 
       if (api_status == STATUS_VALID) {
+        text_x = matrix_width;
         printf("Valid data, downloading GIF...\n");
         if (DownloadAndSaveGif(g_config.api_gif_url, temp_gif) &&
             PingGif(temp_gif, frame_count, frame_delays, gif_w, gif_h)) {
@@ -508,6 +579,7 @@ int main(int argc, char* argv[]) {
           std::lock_guard<std::mutex> lock(g_api_mutex);
           g_api_data.status = STATUS_HTTP_FAILED;
           last_status = STATUS_HTTP_FAILED;
+          text_x = 0;
           fprintf(stderr, "GIF download or ping failed\n");
         }
       } else if (api_status == STATUS_JSON_NULL && !g_config.idle_path.empty()) {
@@ -520,6 +592,7 @@ int main(int argc, char* argv[]) {
       } else if (api_status == STATUS_JSON_NULL) {
         printf("JSON returned null, clearing matrix\n");
       } else {
+        text_x = 0;
         printf("API failed, showing error text\n");
       }
 
@@ -537,10 +610,11 @@ int main(int argc, char* argv[]) {
 
     {
       if (frame_count > 0 && current_pixels.empty()) {
-        if (!LoadGifFrameAtIndex(media_path.c_str(), frame_index, MATRIX_COLS, MATRIX_ROWS, g_config.text_bar_height, current_pixels, current_frame_delay)) {
+        if (!LoadGifFrameAtIndex(media_path.c_str(), frame_index, matrix_width, matrix_height, g_config.text_bar_height, current_pixels, current_frame_delay)) {
           std::lock_guard<std::mutex> lock(g_api_mutex);
           g_api_data.status = STATUS_HTTP_FAILED;
           last_status = STATUS_HTTP_FAILED;
+          text_x = 0;
           current_pixels.clear();
           frame_count = 0;
           fprintf(stderr, "Frame load failed\n");
@@ -548,7 +622,7 @@ int main(int argc, char* argv[]) {
       }
     }
 
-    if (!current_pixels.empty()) CopyPixelsToCanvas(current_pixels, offscreen, MATRIX_COLS, MATRIX_ROWS);
+    if (!current_pixels.empty()) CopyPixelsToCanvas(current_pixels, offscreen, matrix_width, matrix_height);
 
     std::string display_text;
     bool draw_text_bar = false;
@@ -565,8 +639,8 @@ int main(int argc, char* argv[]) {
 
     if (draw_text_bar) {
       DrawTextBar(offscreen,
-            MATRIX_COLS,
-            MATRIX_ROWS,
+            matrix_width,
+            matrix_height,
             g_config.text_bar_height,
             TEXT_BAR_COLOR,
             font,
@@ -586,7 +660,7 @@ int main(int argc, char* argv[]) {
       }
 
       if (text_x < -approx_text_width - 20) {
-        text_x = MATRIX_COLS;
+        text_x = matrix_width;
       }
     }
     

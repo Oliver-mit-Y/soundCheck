@@ -35,6 +35,11 @@ sudo ./gif_scroller_api \
   --gif-url "http://192.168.1.100:4567/api/art/cover.gif" \
   --json-url "http://192.168.1.100:4567/api/info" \
   --keys "song_name,artist,album,year" \
+  --led-gpio-mapping adafruit-hat-pwm \
+  --led-rows 64 \
+  --led-cols 64 \
+  --led-chain 1 \
+  --led-slowdown-gpio 2 \
   --text-speed 2 \
   --gif-multiplier 1.0 \
   --api-interval 5000 \
@@ -49,10 +54,11 @@ Arguments:
 - `--text-speed <int>`: Text scroll speed in pixels per frame. Default: `2`.
 - `--gif-multiplier <float>`: GIF animation speed multiplier. `1.0` is original speed, `2.0` is twice as fast. Default: `1.0`.
 - `--api-interval <ms>`: Metadata polling interval. Default: `5000`.
-- `--font-path <path>`: BDF font path. Default: `fonts/7x13.bdf`.
+- `--font-path <path>`: BDF font path. Default: `../fonts/7x13.bdf` when running from `utils`.
 - `--bar-height <px>`: Bottom text bar height. Default: `16`.
 - `--idle-path <path>`: Optional local image/GIF to show when the JSON endpoint returns `null`.
 - `--gif-speed <int>`: Accepted for compatibility, but not used. The GIF fills the canvas and does not spatially scroll.
+- `--led-gpio-mapping`, `--led-rows`, `--led-cols`, `--led-chain`, and other `--led-*` flags are passed through to the RGB matrix library. Use the same values that worked with the examples.
 
 ## API Contract
 
@@ -109,6 +115,11 @@ ExecStart=/home/pi/soundCheck/guest/rpi-rgb-led-matrix-master/utils/gif_scroller
   --gif-url "http://192.168.1.100:4567/api/art/cover.gif" \
   --json-url "http://192.168.1.100:4567/api/info" \
   --keys "song_name,artist,album,year" \
+  --led-gpio-mapping adafruit-hat-pwm \
+  --led-rows 64 \
+  --led-cols 64 \
+  --led-chain 1 \
+  --led-slowdown-gpio 2 \
   --api-interval 5000
 Restart=on-failure
 RestartSec=10
