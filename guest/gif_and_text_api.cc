@@ -333,10 +333,68 @@ static std::string BuildScrollText(const std::string &json,
   return out.empty() ? "error" : out;
 }
 
+static void FitImageToTarget(Magick::Image *img, int target_width,
+                             int target_height) {
+  if ((int)img->columns() != target_width ||
+      (int)img->rows() != target_height) {
+    img->scale(Magick::Geometry(target_width, target_height));
+  }
+  img->type(Magick::TrueColorType);
+}
+
+static bool ExportFramePixels(Magick::Image *img, int target_width,
+                              int target_height, Frame *frame,
+                              std::string *err) {
+  std::vector<uint8_t> rgb(target_width * target_height * 3);
+  try {
+    img->write(0, 0, target_width, target_height, "RGB", Magick::CharPixel,
+               rgb.data());
+  } catch (std::exception &e) {
+    if (e.what()) *err = e.what();
+    return false;
+  }
+
+  frame->pixels.resize(target_width * target_height);
+  for (size_t i = 0, p = 0; i < frame->pixels.size(); ++i, p += 3) {
+    frame->pixels[i] = Pixel{rgb[p], rgb[p + 1], rgb[p + 2]};
+  }
+  return true;
+}
+
+static bool FramesToAnimation(const std::vector<Magick::Image> &frames,
+                              int target_width, int target_height,
+                              int delay_override_ms,
+                              std::shared_ptr<Animation> *animation,
+                              std::string *err) {
+  std::shared_ptr<Animation> result(new Animation());
+  result->width = target_width;
+  result->height = target_height;
+  result->frames.reserve(frames.size());
+  for (size_t i = 0; i < frames.size(); ++i) {
+    Magick::Image img = frames[i];
+    FitImageToTarget(&img, target_width, target_height);
+
+    Frame frame;
+    frame.delay_ms = delay_override_ms >= 0
+      ? delay_override_ms
+      : (frames.size() > 1 ? img.animationDelay() * 10 : 1000);
+    if (frame.delay_ms <= 0) frame.delay_ms = 100;
+
+    if (!ExportFramePixels(&img, target_width, target_height, &frame, err)) {
+      return false;
+    }
+    result->frames.push_back(frame);
+  }
+
+  *animation = result;
+  return true;
+}
+
 static bool LoadImageData(const std::string &data, int target_width,
                           int target_height, int delay_override_ms,
                           std::shared_ptr<Animation> *animation,
                           std::string *err) {
+  const tmillis_t start_ms = GetTimeInMillis();
   std::vector<Magick::Image> source;
   std::vector<Magick::Image> frames;
   try {
@@ -355,39 +413,13 @@ static bool LoadImageData(const std::string &data, int target_width,
     *err = "no image frames";
     return false;
   }
-  fprintf(stderr, "[image] decoded API image frames=%zu target=%dx%d\n",
-          frames.size(), target_width, target_height);
-
-  std::shared_ptr<Animation> result(new Animation());
-  result->width = target_width;
-  result->height = target_height;
-  result->frames.reserve(frames.size());
-  for (size_t i = 0; i < frames.size(); ++i) {
-    Magick::Image img = frames[i];
-    img.scale(Magick::Geometry(target_width, target_height));
-    img.type(Magick::TrueColorType);
-
-    Frame frame;
-    frame.delay_ms = delay_override_ms >= 0
-      ? delay_override_ms
-      : (frames.size() > 1 ? img.animationDelay() * 10 : 1000);
-    if (frame.delay_ms <= 0) frame.delay_ms = 100;
-    frame.pixels.resize(target_width * target_height);
-
-    for (int y = 0; y < target_height; ++y) {
-      for (int x = 0; x < target_width; ++x) {
-        const Magick::Color &c = img.pixelColor(x, y);
-        Pixel p;
-        p.r = ScaleQuantumToChar(c.redQuantum());
-        p.g = ScaleQuantumToChar(c.greenQuantum());
-        p.b = ScaleQuantumToChar(c.blueQuantum());
-        frame.pixels[y * target_width + x] = p;
-      }
-    }
-    result->frames.push_back(frame);
+  if (!FramesToAnimation(frames, target_width, target_height,
+                         delay_override_ms, animation, err)) {
+    return false;
   }
-
-  *animation = result;
+  fprintf(stderr, "[image] decoded API image frames=%zu target=%dx%d took=%lldms\n",
+          frames.size(), target_width, target_height,
+          (long long)(GetTimeInMillis() - start_ms));
   return true;
 }
 
@@ -395,6 +427,7 @@ static bool LoadImageFile(const std::string &path, int target_width,
                           int target_height, int delay_override_ms,
                           std::shared_ptr<Animation> *animation,
                           std::string *err) {
+  const tmillis_t start_ms = GetTimeInMillis();
   std::vector<Magick::Image> source;
   std::vector<Magick::Image> frames;
   try {
@@ -412,35 +445,13 @@ static bool LoadImageFile(const std::string &path, int target_width,
     *err = "no image frames";
     return false;
   }
-  fprintf(stderr, "[image] decoded idle image path=%s frames=%zu target=%dx%d\n",
-          path.c_str(), frames.size(), target_width, target_height);
-
-  std::shared_ptr<Animation> result(new Animation());
-  result->width = target_width;
-  result->height = target_height;
-  for (size_t i = 0; i < frames.size(); ++i) {
-    Magick::Image img = frames[i];
-    img.scale(Magick::Geometry(target_width, target_height));
-    img.type(Magick::TrueColorType);
-    Frame frame;
-    frame.delay_ms = delay_override_ms >= 0
-      ? delay_override_ms
-      : (frames.size() > 1 ? img.animationDelay() * 10 : 1000);
-    if (frame.delay_ms <= 0) frame.delay_ms = 100;
-    frame.pixels.resize(target_width * target_height);
-    for (int y = 0; y < target_height; ++y) {
-      for (int x = 0; x < target_width; ++x) {
-        const Magick::Color &c = img.pixelColor(x, y);
-        frame.pixels[y * target_width + x] = Pixel{
-          ScaleQuantumToChar(c.redQuantum()),
-          ScaleQuantumToChar(c.greenQuantum()),
-          ScaleQuantumToChar(c.blueQuantum())
-        };
-      }
-    }
-    result->frames.push_back(frame);
+  if (!FramesToAnimation(frames, target_width, target_height,
+                         delay_override_ms, animation, err)) {
+    return false;
   }
-  *animation = result;
+  fprintf(stderr, "[image] decoded idle image path=%s frames=%zu target=%dx%d took=%lldms\n",
+          path.c_str(), frames.size(), target_width, target_height,
+          (long long)(GetTimeInMillis() - start_ms));
   return true;
 }
 
@@ -468,6 +479,8 @@ static void PollApis(const Config config, SharedState *state,
                      int width, int height) {
   std::string last_json;
   bool showing_idle = false;
+  bool last_state_was_idle = false;
+  std::shared_ptr<Animation> idle_animation_cache;
   fprintf(stderr, "[poll] starting json_url=%s gif_url=%s poll_ms=%d keys=%s\n",
           config.json_url.c_str(), config.gif_url.c_str(), config.poll_ms,
           JoinKeys(config.keys).c_str());
@@ -481,80 +494,89 @@ static void PollApis(const Config config, SharedState *state,
       state->signal_status = SIGNAL_ERROR;
       ++state->generation;
       fprintf(stderr, "JSON fetch failed: %s\n", err.c_str());
-    } else if (json != last_json) {
-      fprintf(stderr, "[poll] JSON changed bytes=%zu preview='%s'\n",
-              json.size(), Preview(json, 180).c_str());
-      if (JsonIsNull(json)) {
-        fprintf(stderr, "[poll] JSON is null; using idle mode\n");
-        bool idle_ok = config.idle_image.empty() || showing_idle;
-        std::shared_ptr<Animation> idle_animation;
-        if (!config.idle_image.empty() && !showing_idle) {
-          fprintf(stderr, "[idle] loading idle image: %s\n",
-                  config.idle_image.c_str());
+    } else {
+      const bool json_is_null = JsonIsNull(json);
+      const bool forced_idle_to_data_change = last_state_was_idle && !json_is_null;
+      if (json != last_json || forced_idle_to_data_change) {
+        fprintf(stderr, "[poll] JSON changed%s bytes=%zu preview='%s'\n",
+                forced_idle_to_data_change ? " (idle->data)" : "",
+                json.size(), Preview(json, 180).c_str());
+        if (json_is_null) {
+          fprintf(stderr, "[poll] JSON is null; using idle mode\n");
+          bool idle_ok = config.idle_image.empty() || idle_animation_cache;
+          if (!config.idle_image.empty() && !idle_animation_cache) {
+            fprintf(stderr, "[idle] loading idle image: %s\n",
+                    config.idle_image.c_str());
+            {
+              std::lock_guard<std::mutex> lock(state->mutex);
+              state->signal_status = SIGNAL_LOADING;
+              ++state->generation;
+            }
+            if (LoadImageFile(config.idle_image, width, height,
+                              config.gif_delay_override_ms,
+                              &idle_animation_cache,
+                              &err)) {
+              idle_ok = true;
+            } else {
+              fprintf(stderr, "Idle image load failed: %s\n", err.c_str());
+            }
+          }
+          {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->text = idle_ok ? "" : "error";
+            state->signal_status = idle_ok ? SIGNAL_NORMAL : SIGNAL_ERROR;
+            if (idle_animation_cache) {
+              state->animation = idle_animation_cache;
+              showing_idle = true;
+            } else if (config.idle_image.empty()) {
+              state->animation.reset();
+              showing_idle = false;
+            }
+            ++state->generation;
+          }
+          fprintf(stderr, "[state] idle applied ok=%s generation=%llu\n",
+                  idle_ok ? "yes" : "no",
+                  (unsigned long long)state->generation);
+          if (idle_ok) {
+            last_json = json;
+            last_state_was_idle = true;
+          }
+        } else {
+          std::shared_ptr<Animation> new_animation;
+          std::string gif_data;
+          const std::string text = BuildScrollText(json, config.keys);
+          fprintf(stderr, "[poll] fetching GIF/image: %s\n",
+                  config.gif_url.c_str());
           {
             std::lock_guard<std::mutex> lock(state->mutex);
             state->signal_status = SIGNAL_LOADING;
             ++state->generation;
           }
-          if (LoadImageFile(config.idle_image, width, height,
-                            config.gif_delay_override_ms, &idle_animation,
-                            &err)) {
-            idle_ok = true;
-          } else {
-            fprintf(stderr, "Idle image load failed: %s\n", err.c_str());
-          }
-        }
-        {
-          std::lock_guard<std::mutex> lock(state->mutex);
-          state->text = idle_ok ? "" : "error";
-          state->signal_status = idle_ok ? SIGNAL_NORMAL : SIGNAL_ERROR;
-          if (idle_animation) {
-            state->animation = idle_animation;
-            showing_idle = true;
-          } else if (config.idle_image.empty()) {
-            state->animation.reset();
+          if (FetchUrl(config.gif_url, &gif_data, &err) &&
+              LoadImageData(gif_data, width, height, config.gif_delay_override_ms,
+                            &new_animation, &err)) {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->text = text;
+            state->animation = new_animation;
+            state->signal_status = text == "error" ? SIGNAL_ERROR : SIGNAL_NORMAL;
+            ++state->generation;
             showing_idle = false;
+            last_json = json;
+            last_state_was_idle = false;
+            fprintf(stderr, "[state] active applied frames=%zu text='%s' generation=%llu\n",
+                    new_animation->frames.size(), Preview(text, 120).c_str(),
+                    (unsigned long long)state->generation);
+          } else {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->text = "error";
+            state->signal_status = SIGNAL_ERROR;
+            ++state->generation;
+            fprintf(stderr, "GIF update failed: %s\n", err.c_str());
           }
-          ++state->generation;
         }
-        fprintf(stderr, "[state] idle applied ok=%s generation=%llu\n",
-                idle_ok ? "yes" : "no",
-                (unsigned long long)state->generation);
-        if (idle_ok) last_json = json;
       } else {
-        std::shared_ptr<Animation> new_animation;
-        std::string gif_data;
-        const std::string text = BuildScrollText(json, config.keys);
-        fprintf(stderr, "[poll] fetching GIF/image: %s\n",
-                config.gif_url.c_str());
-        {
-          std::lock_guard<std::mutex> lock(state->mutex);
-          state->signal_status = SIGNAL_LOADING;
-          ++state->generation;
-        }
-        if (FetchUrl(config.gif_url, &gif_data, &err) &&
-            LoadImageData(gif_data, width, height, config.gif_delay_override_ms,
-                          &new_animation, &err)) {
-          std::lock_guard<std::mutex> lock(state->mutex);
-          state->text = text;
-          state->animation = new_animation;
-          state->signal_status = text == "error" ? SIGNAL_ERROR : SIGNAL_NORMAL;
-          ++state->generation;
-          showing_idle = false;
-          last_json = json;
-          fprintf(stderr, "[state] active applied frames=%zu text='%s' generation=%llu\n",
-                  new_animation->frames.size(), Preview(text, 120).c_str(),
-                  (unsigned long long)state->generation);
-        } else {
-          std::lock_guard<std::mutex> lock(state->mutex);
-          state->text = "error";
-          state->signal_status = SIGNAL_ERROR;
-          ++state->generation;
-          fprintf(stderr, "GIF update failed: %s\n", err.c_str());
-        }
+        fprintf(stderr, "[poll] JSON unchanged\n");
       }
-    } else {
-      fprintf(stderr, "[poll] JSON unchanged\n");
     }
 
     const tmillis_t end = GetTimeInMillis() + config.poll_ms;
