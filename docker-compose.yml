@@ -8,6 +8,7 @@ services:
     container_name: soundcheck_host
     restart: unless-stopped
     environment:
+      - TZ=Europe/Berlin
       - PYTHONUNBUFFERED=1
       - SPOTIPY_REDIRECT_URI=https://example.com/callback
       - SPOTIPY_CLIENT_ID

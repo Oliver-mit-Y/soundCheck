@@ -324,15 +324,9 @@ static bool ExtractFlatJsonValues(const std::string &json,
   return false;
 }
 
-static std::string BuildScrollText(const std::string &json,
-                                   const std::vector<std::string> &keys) {
-  std::map<std::string, std::string> values;
-  if (!ExtractFlatJsonValues(json, &values)) {
-    fprintf(stderr, "[json] parse failed body='%s'\n",
-            Preview(json, 180).c_str());
-    return "error";
-  }
-
+static std::string BuildScrollTextFromValues(
+    const std::map<std::string, std::string> &values,
+    const std::vector<std::string> &keys) {
   std::string out;
   for (size_t i = 0; i < keys.size(); ++i) {
     const std::map<std::string, std::string>::const_iterator it =
@@ -349,20 +343,32 @@ static std::string BuildScrollText(const std::string &json,
   return out.empty() ? "error" : out;
 }
 
-static void PreprocessImage(Magick::Image *img, int target_width,
-                            int target_height, bool pre_processing) {
+static const uint8_t *GammaTable06() {
+  static bool initialized = false;
+  static uint8_t table[256];
+  if (!initialized) {
+    for (int i = 0; i < 256; ++i) {
+      const double normalized = i / 255.0;
+      const int corrected = (int)round(pow(normalized, 1.0 / 0.6) * 255.0);
+      table[i] = (uint8_t)std::max(0, std::min(255, corrected));
+    }
+    initialized = true;
+  }
+  return table;
+}
+
+static void PrepareImage(Magick::Image *img, int target_width,
+                         int target_height) {
   if ((int)img->columns() != target_width ||
       (int)img->rows() != target_height) {
     img->scale(Magick::Geometry(target_width, target_height));
-  }
-  if (pre_processing) {
-    img->gamma(0.6);
   }
   img->type(Magick::TrueColorType);
 }
 
 static bool ExportFramePixels(Magick::Image *img, int target_width,
-                              int target_height, Frame *frame,
+                              int target_height, bool pre_processing,
+                              Frame *frame,
                               std::string *err) {
   std::vector<uint8_t> rgb(target_width * target_height * 3);
   try {
@@ -374,8 +380,17 @@ static bool ExportFramePixels(Magick::Image *img, int target_width,
   }
 
   frame->pixels.resize(target_width * target_height);
+  const uint8_t *gamma_table = pre_processing ? GammaTable06() : NULL;
   for (size_t i = 0, p = 0; i < frame->pixels.size(); ++i, p += 3) {
-    frame->pixels[i] = Pixel{rgb[p], rgb[p + 1], rgb[p + 2]};
+    if (gamma_table) {
+      frame->pixels[i] = Pixel{
+        gamma_table[rgb[p]],
+        gamma_table[rgb[p + 1]],
+        gamma_table[rgb[p + 2]]
+      };
+    } else {
+      frame->pixels[i] = Pixel{rgb[p], rgb[p + 1], rgb[p + 2]};
+    }
   }
   return true;
 }
@@ -391,7 +406,7 @@ static bool FramesToAnimation(const std::vector<Magick::Image> &frames,
   result->frames.reserve(frames.size());
   for (size_t i = 0; i < frames.size(); ++i) {
     Magick::Image img = frames[i];
-    PreprocessImage(&img, target_width, target_height, pre_processing);
+    PrepareImage(&img, target_width, target_height);
 
     Frame frame;
     frame.delay_ms = delay_override_ms >= 0
@@ -399,7 +414,8 @@ static bool FramesToAnimation(const std::vector<Magick::Image> &frames,
       : (frames.size() > 1 ? img.animationDelay() * 10 : 1000);
     if (frame.delay_ms <= 0) frame.delay_ms = 100;
 
-    if (!ExportFramePixels(&img, target_width, target_height, &frame, err)) {
+    if (!ExportFramePixels(&img, target_width, target_height,
+                           pre_processing, &frame, err)) {
       return false;
     }
     result->frames.push_back(frame);
@@ -501,9 +517,11 @@ static void RenderFrame(FrameCanvas *canvas, const Animation &animation,
 static void PollApis(const Config config, SharedState *state,
                      int width, int height) {
   std::string last_json;
+  std::string last_img_value;
   bool showing_idle = false;
   bool last_state_was_idle = false;
   std::shared_ptr<Animation> idle_animation_cache;
+  std::shared_ptr<Animation> active_animation_cache;
   fprintf(stderr, "[poll] starting json_url=%s gif_url=%s poll_ms=%d keys=%s\n",
           config.json_url.c_str(), config.gif_url.c_str(), config.poll_ms,
           JoinKeys(config.keys).c_str());
@@ -566,35 +584,73 @@ static void PollApis(const Config config, SharedState *state,
         } else {
           std::shared_ptr<Animation> new_animation;
           std::string gif_data;
-          const std::string text = BuildScrollText(json, config.keys);
-          fprintf(stderr, "[poll] fetching GIF/image: %s\n",
-                  config.gif_url.c_str());
-          {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            state->signal_status = SIGNAL_LOADING;
-            ++state->generation;
-          }
-          if (FetchUrl(config.gif_url, &gif_data, &err) &&
-              LoadImageData(gif_data, width, height, config.gif_delay_override_ms,
-                            config.pre_processing,
-                            &new_animation, &err)) {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            state->text = text;
-            state->animation = new_animation;
-            state->signal_status = text == "error" ? SIGNAL_ERROR : SIGNAL_NORMAL;
-            ++state->generation;
-            showing_idle = false;
-            last_json = json;
-            last_state_was_idle = false;
-            fprintf(stderr, "[state] active applied frames=%zu text='%s' generation=%llu\n",
-                    new_animation->frames.size(), Preview(text, 120).c_str(),
-                    (unsigned long long)state->generation);
-          } else {
+          std::map<std::string, std::string> values;
+          if (!ExtractFlatJsonValues(json, &values)) {
+            fprintf(stderr, "[json] parse failed body='%s'\n",
+                    Preview(json, 180).c_str());
             std::lock_guard<std::mutex> lock(state->mutex);
             state->text = "error";
             state->signal_status = SIGNAL_ERROR;
             ++state->generation;
-            fprintf(stderr, "GIF update failed: %s\n", err.c_str());
+          } else {
+            const std::string text = BuildScrollTextFromValues(values, config.keys);
+            const std::map<std::string, std::string>::const_iterator img_it =
+              values.find("img");
+            const bool has_img_value = img_it != values.end();
+            const std::string img_value = has_img_value ? img_it->second : "";
+            const bool can_reuse_active_gif =
+              has_img_value && !last_img_value.empty() &&
+              img_value == last_img_value && active_animation_cache;
+
+            if (can_reuse_active_gif) {
+              std::lock_guard<std::mutex> lock(state->mutex);
+              state->text = text;
+              state->animation = active_animation_cache;
+              state->signal_status = text == "error" ? SIGNAL_ERROR : SIGNAL_NORMAL;
+              ++state->generation;
+              showing_idle = false;
+              last_json = json;
+              last_state_was_idle = false;
+              fprintf(stderr, "[state] text-only update img unchanged text='%s' generation=%llu\n",
+                      Preview(text, 120).c_str(),
+                      (unsigned long long)state->generation);
+            } else {
+              fprintf(stderr, "[poll] fetching GIF/image: %s\n",
+                      config.gif_url.c_str());
+              {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->signal_status = SIGNAL_LOADING;
+                ++state->generation;
+              }
+              if (FetchUrl(config.gif_url, &gif_data, &err) &&
+                  LoadImageData(gif_data, width, height, config.gif_delay_override_ms,
+                                config.pre_processing,
+                                &new_animation, &err)) {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->text = text;
+                state->animation = new_animation;
+                state->signal_status = text == "error" ? SIGNAL_ERROR : SIGNAL_NORMAL;
+                ++state->generation;
+                showing_idle = false;
+                active_animation_cache = new_animation;
+                if (has_img_value) {
+                  last_img_value = img_value;
+                } else {
+                  last_img_value.clear();
+                }
+                last_json = json;
+                last_state_was_idle = false;
+                fprintf(stderr, "[state] active applied frames=%zu text='%s' generation=%llu\n",
+                        new_animation->frames.size(), Preview(text, 120).c_str(),
+                        (unsigned long long)state->generation);
+              } else {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->text = "error";
+                state->signal_status = SIGNAL_ERROR;
+                ++state->generation;
+                fprintf(stderr, "GIF update failed: %s\n", err.c_str());
+              }
+            }
           }
         }
       } else {
