@@ -97,7 +97,7 @@ def image_convert(img):
 
 def main():
     sp = spotipy_setup()
-    last_img = ''
+    last_info = ''
     while True:
         time.sleep(6)
         hour = int(strftime("%H", localtime()))
@@ -120,19 +120,20 @@ def main():
                     "year": info["item"]["album"]["release_date"].split("-")[0],
                     "img": info["item"]["album"]["images"][1]["url"],
                 }
-                if info['img'] != last_img:
-                    with open("./out/cover.jpg", "wb") as f:
-                        img = requests.get(info["img"])
-                        f.write(img.content)
-                        f.close()
-
-                    image_convert("./out/cover.jpg")
-
+                if info != last_info:
                     with open("./out/info.json", "w", encoding="utf-8") as f:
-                        json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
-                        f.close()
-                        print('ye')
-                    last_img = info['img']
+                                            json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
+                                            f.close()
+                                            print('ye')
+                    last_info=info
+                    if info['img'] != last_info['img']:
+                        with open("./out/cover.jpg", "wb") as f:
+                            img = requests.get(info["img"])
+                            f.write(img.content)
+                            f.close()
+
+                        image_convert("./out/cover.jpg")
+                        last_info = info
             else: 
                 info = None
                 with open("./out/info.json", "w", encoding="utf-8") as f:
