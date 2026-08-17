@@ -19,7 +19,7 @@ services:
       KEYS: "song,artist,album,year"
       FONT: "/app/fonts/font.bdf"
       IDLE_IMAGE: "/app/idle-small.gif"
-      LED_ARGS: "--led-rows=64 --led-cols=64 --led-chain=1 --led-slowdown-gpio=2 --led-brightness=80 --led-gpio-mapping=adafruit-hat-pwm"
+      LED_ARGS: "--led-rows=64 --led-cols=64 --led-chain=1 --led-slowdown-gpio=2 --led-brightness=60 --led-gpio-mapping=adafruit-hat-pwm"
       EXTRA_ARGS: "--text-bar-height=8 --scroll-speed=2 --gif-speed=900 --poll-ms=3000"
 
     command:
