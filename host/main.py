@@ -125,11 +125,12 @@ def main():
                                             json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
                                             f.close()
                                             print('ye')
-                    if info['img'] != last_info['img']:
-                        with open("./out/cover.jpg", "wb") as f:
-                            img = requests.get(info["img"])
-                            f.write(img.content)
-                            f.close()
+                    if last_info:
+                        if info['img'] != last_info['img']:
+                            with open("./out/cover.jpg", "wb") as f:
+                                img = requests.get(info["img"])
+                                f.write(img.content)
+                                f.close()
 
                         image_convert("./out/cover.jpg")
                     last_info = info
