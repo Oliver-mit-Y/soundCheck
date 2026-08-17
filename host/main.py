@@ -131,10 +131,11 @@ def main():
                                 img = requests.get(info["img"])
                                 f.write(img.content)
                                 f.close()
+                            image_convert("./out/cover.jpg")
                     except:
                         pass
 
-                        image_convert("./out/cover.jpg")
+                        
                     last_info = info
             else: 
                 info = None
