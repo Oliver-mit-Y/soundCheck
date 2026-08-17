@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import time
+from time import localtime, strftime
 import requests
 import spotipy
 import yaml
@@ -98,7 +99,17 @@ def main():
     sp = spotipy_setup()
     last_img = ''
     while True:
-        time.sleep(2)
+        time.sleep(6)
+        hour = int(strftime("%H", localtime()))
+        print(hour)
+        if 13 > hour >= 1:
+            info = None
+            with open("./out/info.json", "w", encoding="utf-8") as f:
+                                json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
+                                f.close()
+            print("SLEEPMODE between 01am and 01pm")
+            continue
+        
         try:
             info = sp.current_playback()
             if info and info.get("is_playing"):
