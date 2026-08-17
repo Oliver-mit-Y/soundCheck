@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <string>
 #include <sys/time.h>
 #include <thread>
@@ -107,6 +108,7 @@ struct Config {
   int gif_delay_override_ms = -1;
   int poll_ms = 1000;
   int letter_spacing = 0;
+  bool pre_processing = true;
   Color text_color = Color(255, 255, 255);
   Color bar_color = Color(0, 0, 0);
 };
@@ -198,6 +200,20 @@ static std::vector<std::string> SplitKeys(const std::string &keys) {
 
 static bool ParseColor(Color *c, const char *str) {
   return sscanf(str, "%hhu,%hhu,%hhu", &c->r, &c->g, &c->b) == 3;
+}
+
+static bool ParseBool(const char *str, bool *value) {
+  if (strcasecmp(str, "true") == 0 || strcmp(str, "1") == 0 ||
+      strcasecmp(str, "yes") == 0 || strcasecmp(str, "on") == 0) {
+    *value = true;
+    return true;
+  }
+  if (strcasecmp(str, "false") == 0 || strcmp(str, "0") == 0 ||
+      strcasecmp(str, "no") == 0 || strcasecmp(str, "off") == 0) {
+    *value = false;
+    return true;
+  }
+  return false;
 }
 
 static bool JsonIsNull(const std::string &json) {
@@ -333,11 +349,14 @@ static std::string BuildScrollText(const std::string &json,
   return out.empty() ? "error" : out;
 }
 
-static void FitImageToTarget(Magick::Image *img, int target_width,
-                             int target_height) {
+static void PreprocessImage(Magick::Image *img, int target_width,
+                            int target_height, bool pre_processing) {
   if ((int)img->columns() != target_width ||
       (int)img->rows() != target_height) {
     img->scale(Magick::Geometry(target_width, target_height));
+  }
+  if (pre_processing) {
+    img->gamma(0.6);
   }
   img->type(Magick::TrueColorType);
 }
@@ -363,7 +382,7 @@ static bool ExportFramePixels(Magick::Image *img, int target_width,
 
 static bool FramesToAnimation(const std::vector<Magick::Image> &frames,
                               int target_width, int target_height,
-                              int delay_override_ms,
+                              int delay_override_ms, bool pre_processing,
                               std::shared_ptr<Animation> *animation,
                               std::string *err) {
   std::shared_ptr<Animation> result(new Animation());
@@ -372,7 +391,7 @@ static bool FramesToAnimation(const std::vector<Magick::Image> &frames,
   result->frames.reserve(frames.size());
   for (size_t i = 0; i < frames.size(); ++i) {
     Magick::Image img = frames[i];
-    FitImageToTarget(&img, target_width, target_height);
+    PreprocessImage(&img, target_width, target_height, pre_processing);
 
     Frame frame;
     frame.delay_ms = delay_override_ms >= 0
@@ -392,6 +411,7 @@ static bool FramesToAnimation(const std::vector<Magick::Image> &frames,
 
 static bool LoadImageData(const std::string &data, int target_width,
                           int target_height, int delay_override_ms,
+                          bool pre_processing,
                           std::shared_ptr<Animation> *animation,
                           std::string *err) {
   const tmillis_t start_ms = GetTimeInMillis();
@@ -414,17 +434,19 @@ static bool LoadImageData(const std::string &data, int target_width,
     return false;
   }
   if (!FramesToAnimation(frames, target_width, target_height,
-                         delay_override_ms, animation, err)) {
+                         delay_override_ms, pre_processing, animation, err)) {
     return false;
   }
-  fprintf(stderr, "[image] decoded API image frames=%zu target=%dx%d took=%lldms\n",
+  fprintf(stderr, "[image] decoded API image frames=%zu target=%dx%d pre_processing=%s took=%lldms\n",
           frames.size(), target_width, target_height,
+          pre_processing ? "true" : "false",
           (long long)(GetTimeInMillis() - start_ms));
   return true;
 }
 
 static bool LoadImageFile(const std::string &path, int target_width,
                           int target_height, int delay_override_ms,
+                          bool pre_processing,
                           std::shared_ptr<Animation> *animation,
                           std::string *err) {
   const tmillis_t start_ms = GetTimeInMillis();
@@ -446,11 +468,12 @@ static bool LoadImageFile(const std::string &path, int target_width,
     return false;
   }
   if (!FramesToAnimation(frames, target_width, target_height,
-                         delay_override_ms, animation, err)) {
+                         delay_override_ms, pre_processing, animation, err)) {
     return false;
   }
-  fprintf(stderr, "[image] decoded idle image path=%s frames=%zu target=%dx%d took=%lldms\n",
+  fprintf(stderr, "[image] decoded idle image path=%s frames=%zu target=%dx%d pre_processing=%s took=%lldms\n",
           path.c_str(), frames.size(), target_width, target_height,
+          pre_processing ? "true" : "false",
           (long long)(GetTimeInMillis() - start_ms));
   return true;
 }
@@ -503,6 +526,8 @@ static void PollApis(const Config config, SharedState *state,
                 json.size(), Preview(json, 180).c_str());
         if (json_is_null) {
           fprintf(stderr, "[poll] JSON is null; using idle mode\n");
+          last_json = "null";
+          last_state_was_idle = true;
           bool idle_ok = config.idle_image.empty() || idle_animation_cache;
           if (!config.idle_image.empty() && !idle_animation_cache) {
             fprintf(stderr, "[idle] loading idle image: %s\n",
@@ -514,6 +539,7 @@ static void PollApis(const Config config, SharedState *state,
             }
             if (LoadImageFile(config.idle_image, width, height,
                               config.gif_delay_override_ms,
+                              config.pre_processing,
                               &idle_animation_cache,
                               &err)) {
               idle_ok = true;
@@ -537,10 +563,6 @@ static void PollApis(const Config config, SharedState *state,
           fprintf(stderr, "[state] idle applied ok=%s generation=%llu\n",
                   idle_ok ? "yes" : "no",
                   (unsigned long long)state->generation);
-          if (idle_ok) {
-            last_json = json;
-            last_state_was_idle = true;
-          }
         } else {
           std::shared_ptr<Animation> new_animation;
           std::string gif_data;
@@ -554,6 +576,7 @@ static void PollApis(const Config config, SharedState *state,
           }
           if (FetchUrl(config.gif_url, &gif_data, &err) &&
               LoadImageData(gif_data, width, height, config.gif_delay_override_ms,
+                            config.pre_processing,
                             &new_animation, &err)) {
             std::lock_guard<std::mutex> lock(state->mutex);
             state->text = text;
@@ -600,6 +623,7 @@ static int usage(const char *progname) {
           "\t--scroll-speed=N         : Approximate letters per second.\n"
           "\t--gif-speed=N            : Override GIF frame delay in milliseconds.\n"
           "\t--poll-ms=N              : JSON polling interval in milliseconds.\n"
+          "\t--pre-processing=true|false : Apply gamma 0.6 while loading images (default: true).\n"
           "\t--text-color=r,g,b       : Text color, default 255,255,255.\n"
           "\t--bar-color=r,g,b        : Text bar background, default 0,0,0.\n"
           "\t--letter-spacing=N       : Extra font spacing in pixels.\n");
@@ -635,6 +659,7 @@ int main(int argc, char *argv[]) {
     {"text-color", required_argument, 0, 1009},
     {"bar-color", required_argument, 0, 1010},
     {"letter-spacing", required_argument, 0, 1011},
+    {"pre-processing", required_argument, 0, 1012},
     {"help", no_argument, 0, 'h'},
     {0, 0, 0, 0}
   };
@@ -660,6 +685,12 @@ int main(int argc, char *argv[]) {
       if (!ParseColor(&config.bar_color, optarg)) return usage(argv[0]);
       break;
     case 1011: config.letter_spacing = atoi(optarg); break;
+    case 1012:
+      if (!ParseBool(optarg, &config.pre_processing)) {
+        fprintf(stderr, "Invalid --pre-processing value: %s\n", optarg);
+        return usage(argv[0]);
+      }
+      break;
     case 'h':
     default:
       return usage(argv[0]);
@@ -693,12 +724,14 @@ int main(int argc, char *argv[]) {
 
   fprintf(stderr,
           "[config] json_url=%s gif_url=%s idle_image=%s font=%s keys=%s "
-          "bar_height=%d scroll_speed=%.2f gif_speed=%d poll_ms=%d\n",
+          "bar_height=%d scroll_speed=%.2f gif_speed=%d poll_ms=%d "
+          "pre_processing=%s\n",
           config.json_url.c_str(), config.gif_url.c_str(),
           config.idle_image.empty() ? "(none)" : config.idle_image.c_str(),
           config.font_file.c_str(), JoinKeys(config.keys).c_str(),
           config.text_bar_height, config.scroll_speed,
-          config.gif_delay_override_ms, config.poll_ms);
+          config.gif_delay_override_ms, config.poll_ms,
+          config.pre_processing ? "true" : "false");
 
   std::thread poller(PollApis, config, &state, matrix->width(), matrix->height());
 

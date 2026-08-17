@@ -65,7 +65,8 @@ sudo ./gif-and-text-api \
   --font=../fonts/5x7.bdf \
   --text-bar-height=8 \
   --scroll-speed=7 \
-  --gif-speed=-1
+  --gif-speed=-1 \
+  --pre-processing=true
 ```
 
 All standard `rpi-rgb-led-matrix` flags such as `--led-rows`, `--led-cols`, `--led-chain`, `--led-parallel`, `--led-brightness`, `--led-hardware-mapping`, `--led-gpio-mapping`, and `--led-slowdown-gpio` can be passed through unchanged.
@@ -79,6 +80,7 @@ All standard `rpi-rgb-led-matrix` flags such as `--led-rows`, `--led-cols`, `--l
 - `--text-bar-height=N`: bottom bar height in pixels. It is automatically raised to at least the font height.
 - `--scroll-speed=N`: approximate letters per second. Positive scrolls right to left, negative left to right.
 - `--gif-speed=N`: override GIF frame delay in milliseconds. Use `-1` to keep the GIF timing.
+- `--pre-processing=true|false`: apply gamma `0.6` while loading GIF/image frames. Default is `true`.
 - `--idle-image=PATH`: optional local GIF/PNG/JPG shown when the JSON endpoint returns exactly `null`.
 - `--poll-ms=N`: JSON polling interval. Default is `1000`.
 - `--text-color=r,g,b`: text color. Default is white.
