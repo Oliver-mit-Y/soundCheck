@@ -136,6 +136,7 @@ def main():
                         last_info = info
             else: 
                 info = None
+                last_info = info
                 with open("./out/info.json", "w", encoding="utf-8") as f:
                                     json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
                                     f.close()
