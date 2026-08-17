@@ -95,18 +95,41 @@ def image_convert(img):
         )
 
 
+def write_info(info):
+    out_dir = Path("./out")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with (out_dir / "info.json").open("w", encoding="utf-8") as f:
+        json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
+
+
+def info_img(info):
+    if isinstance(info, dict):
+        return info.get("img")
+    return None
+
+
+def download_and_convert_image(img_url):
+    out_dir = Path("./out")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cover_path = out_dir / "cover.jpg"
+    response = requests.get(img_url, timeout=15)
+    response.raise_for_status()
+    cover_path.write_bytes(response.content)
+    image_convert(cover_path)
+
+
 def main():
     sp = spotipy_setup()
-    last_info = ''
+    last_info = None
     while True:
         time.sleep(6)
         hour = int(strftime("%H", localtime()))
         print(hour)
         if 13 > hour >= 1:
             info = None
-            with open("./out/info.json", "w", encoding="utf-8") as f:
-                                json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
-                                f.close()
+            if info != last_info:
+                write_info(info)
+                last_info = info
             print("SLEEPMODE between 01am and 01pm")
             continue
         
@@ -121,38 +144,28 @@ def main():
                     "img": info["item"]["album"]["images"][1]["url"],
                 }
                 if info != last_info:
-                    with open("./out/info.json", "w", encoding="utf-8") as f:
-                                            json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
-                                            f.close()
-                                            print('ye')
-                    try:
-                        if info['img'] != last_info['img']:
-                            with open("./out/cover.jpg", "wb") as f:
-                                img = requests.get(info["img"])
-                                f.write(img.content)
-                                f.close()
-                            image_convert("./out/cover.jpg")
-                    except:
-                        pass
-
-                        
+                    if info_img(info) != info_img(last_info):
+                        try:
+                            download_and_convert_image(info["img"])
+                        except Exception as image_error:
+                            print(f"!!! IMAGE UPDATE FAILED: {image_error}")
+                    write_info(info)
                     last_info = info
             else: 
                 info = None
-                last_info = info
-                with open("./out/info.json", "w", encoding="utf-8") as f:
-                                    json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
-                                    f.close()
+                if info != last_info:
+                    write_info(info)
+                    last_info = info
                                     
 
                 
             print(info)
-        except Exception:
+        except Exception as playback_error:
             info = None
-            with open("./out/info.json", "w", encoding="utf-8") as f:
-                                json.dump(info, f, sort_keys=True, indent=4, ensure_ascii=False)
-                                f.close()
-            print("!!! NO CONNECTION or fail!!!")
+            if info != last_info:
+                write_info(info)
+                last_info = info
+            print(f"!!! NO CONNECTION or fail: {playback_error}")
     
 if __name__ == "__main__":
     main()
