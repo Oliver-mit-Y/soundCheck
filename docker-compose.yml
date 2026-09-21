@@ -15,6 +15,7 @@ services:
       - SPOTIPY_CLIENT_SECRET
     volumes:
       - ./host/conf.yml:/app/conf.yml:ro
+      - ./host/mode:/app/mode:rw
       - ./host/out:/app/out
       - ./host/.cache:/app/.cache
     ports:

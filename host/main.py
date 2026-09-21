@@ -1,4 +1,5 @@
 import json
+import shutil
 import os
 from pathlib import Path
 import time
@@ -117,16 +118,33 @@ def download_and_convert_image(img_url):
     cover_path.write_bytes(response.content)
     image_convert(cover_path)
 
+def set_image(img_path, convert=True):
+    out_dir = "./out/"
+    cover_path = out_dir + "cover.jpg"
+    shutil.copyfile(img_path, cover_path)
+    if convert:
+        image_convert(cover_path)
+
+def set_dark():
+    set_image("./dark.png", convert=False)
+    return {"img": "dark"}
 
 def main():
     sp = spotipy_setup()
     last_info = None
+    mode_path = Path(__file__).resolve().with_name("mode")
     while True:
         time.sleep(6)
+        if mode_path.exists() and mode_path.read_text(encoding="utf-8").strip() == "off":
+            info = set_dark()
+            if info != last_info:
+                write_info(info)
+            last_info = info
+            continue
         hour = int(strftime("%H", localtime()))
         print(hour)
         if 13 > hour >= 1:
-            info = None
+            info = set_dark()
             if info != last_info:
                 write_info(info)
                 last_info = info

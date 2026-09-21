@@ -11,12 +11,25 @@ def create_app(data_dir: Union[str, Path, None] = None) -> Flask:
     base_dir = Path(data_dir) if data_dir is not None else Path(__file__).resolve().parent / "out"
     base_dir = base_dir.resolve()
     base_dir.mkdir(parents=True, exist_ok=True)
+    mode_path = base_dir.parent / "mode"
 
     app = Flask(__name__)
 
     @app.get("/health")
     def health() -> tuple[dict, int]:
         return jsonify({"status": "ok"}), 200
+
+    def set_mode(mode: str):
+        mode_path.write_text(mode + "\n", encoding="utf-8")
+        return jsonify({"mode": mode}), 200
+
+    @app.route("/api/on", methods=["GET", "POST"])
+    def turn_on():
+        return set_mode("on")
+
+    @app.route("/api/off", methods=["GET", "POST"])
+    def turn_off():
+        return set_mode("off")
 
     @app.get("/api/info")
     def get_info():

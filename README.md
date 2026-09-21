@@ -6,4 +6,9 @@ http://127.0.0.1:5000/api/info
 http://127.0.0.1:5000/api/art
 http://127.0.0.1:5000/api/art/cover.png
 
+Control the host display feed with `GET` or `POST` requests to `/api/off` and
+`/api/on` (port 4567 in the Docker setup). Off writes `null` to `info.json` and
+pauses Spotify updates; on resumes them. The selected mode is stored in
+`host/mode`. The normal scheduled sleep period still applies after turning on.
+
 sudo ./gif-and-text-api   --led-rows=64 --led-cols=64 --led-chain=1 --led-slowdown-gpio=2   --json-url=http://192.168.178.100:4567/api/info   --gif-url=http://192.168.178.100:4567/api/art/cover.gif   --keys=song,artist,almbum,year --font=../fonts/font.bdf   --text-bar-height=5 --scroll-speed=2 --gif-speed=900 --led-gpio-mapping=adafruit-hat-pwm --led-brightness=80 --poll-ms=3000
