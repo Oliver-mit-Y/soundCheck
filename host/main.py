@@ -120,7 +120,7 @@ def download_and_convert_image(img_url):
 
 def set_image(img_path, convert=True):
     out_dir = "./out/"
-    cover_path = out_dir + "cover.jpg"
+    cover_path = out_dir + "cover.gif"
     shutil.copyfile(img_path, cover_path)
     if convert:
         image_convert(cover_path)
